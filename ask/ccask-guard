@@ -1,0 +1,57 @@
+#!/bin/bash
+# PreToolUse hook for ccask's agent. claude runs it before every tool call; exit 2 blocks the
+# call and shows the reason to the model. It enforces from outside the model:
+#   - a tool-call budget (CCASK_MAX_TOOLS, counted in CCASK_GUARD_COUNT)
+#   - Bash: exactly one plain `ccfind -n …` or `ccfind read …`, no shell operators
+#   - Read / Grep / Glob: only inside the transcript folders (or ccask's own folder)
+set -uo pipefail
+
+deny() { echo "ccask-guard: $1" >&2; exit 2; }
+
+in=$(cat) || deny "could not read the tool call"
+tool=$(jq -r '.tool_name // ""' 2>/dev/null < <(printf "%s" "$in")) || deny "unreadable tool call"
+
+# The final answer (from --json-schema) is a tool call too. It must always get through and
+# must not use up the budget, or a budget-stopped agent could never answer.
+[ "$tool" = StructuredOutput ] && exit 0
+
+max="${CCASK_MAX_TOOLS:-15}"
+count_file="${CCASK_GUARD_COUNT:-}"
+[ -n "$count_file" ] || deny "no counter file set; refusing to run unmetered"
+n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$count_file" || deny "cannot update the tool counter"
+[ "$n" -le "$max" ] || deny "tool limit ($max calls) reached. Stop searching and answer now with what you have."
+
+roots=("$HOME/.claude/projects" "$HOME/.claude-propagenda/projects" "${CCASK_DIR:-/nonexistent}")
+inside_roots() {   # realpath of $1 is one of the roots or below one
+  local p r
+  p=$(python3 -I -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "$1") || return 1
+  for r in "${roots[@]}"; do
+    r=$(python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$r")
+    [ "$p" = "$r" ] || [[ "$p" == "$r"/* ]] && return 0
+  done
+  return 1
+}
+
+case "$tool" in
+  Bash)
+    cmd=$(jq -r '.tool_input.command // ""' < <(printf "%s" "$in"))
+    [[ "$cmd" =~ ^ccfind\ (-n|read)\  ]] || deny "only 'ccfind -n …' and 'ccfind read …' may run"
+    case "$cmd" in
+      *[\;\&\|\`\$\<\>\(\)\{\}\\]* | *$'\n'* | *$'\r'*)
+        deny "shell operators, substitutions, redirections and newlines are not allowed" ;;
+    esac
+    ;;
+  Read|Grep|Glob)
+    for key in file_path path; do
+      p=$(jq -r --arg k "$key" '.tool_input[$k] // ""' < <(printf "%s" "$in"))
+      [ -z "$p" ] || inside_roots "$p" || deny "$tool may only look inside the transcript folders (got $p)"
+    done
+    pat=$(jq -r '.tool_input.pattern // ""' < <(printf "%s" "$in"))
+    if [ "$tool" = Glob ] && [[ "$pat" == /* || "$pat" == ~* || "$pat" == *..* ]]; then
+      inside_roots "${pat%%[*?{]*}" || deny "Glob pattern must stay inside the transcript folders (got $pat)"
+    fi
+    ;;
+  *) deny "tool '$tool' is not allowed" ;;
+esac
+exit 0

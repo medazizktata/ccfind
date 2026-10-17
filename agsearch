@@ -20,6 +20,7 @@ Usage:
     agsearch "stripe tax id"       # open the TUI pre-filtered to this query
     agsearch -n "stripe tax id"    # non-interactive: ranked sessions as plain text, no fzf
     agsearch read <session-id>     # print a whole session, without resuming it
+    agsearch ask "..."             # optional AI fallback (Haiku agent, ~$0.03-0.20; see ask/)
     agsearch --here "..."          # only sessions from the current directory's project
     agsearch --project myapp       # only sessions whose path matches 'myapp'
     agsearch -a propagenda "..."   # one Claude account: claude, propagenda, all (default)
@@ -2160,6 +2161,12 @@ def main(argv):
         render_transcript(argv[1] if len(argv) > 1 else "",
                           argv[2] if len(argv) > 2 else "0", " ".join(argv[3:]), color=True)
         return 0
+    if argv and argv[0] == "ask":        # ccfind: optional AI fallback in ask/ (costs money)
+        ask = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ask", "ccask")
+        if not os.access(ask, os.X_OK):
+            print(f"ccfind: ask is not installed ({ask} missing)", file=sys.stderr)
+            return 2
+        os.execv(ask, [ask] + argv[1:])
     if argv and argv[0] == "read":
         if len(argv) < 2 or not argv[1].strip():
             print("usage: agsearch read <session-id> [query]", file=sys.stderr)

@@ -1,0 +1,212 @@
+#!/bin/bash
+# ccask: fallback for when ccfind's ranking alone is not enough. Seeds a Haiku agent with
+# ccfind's candidates and lets it confirm one. The agent is read-only: it can run only
+# `ccfind -n` / `ccfind read` plus the Read/Grep/Glob tools.
+set -uo pipefail
+
+DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"   # real dir, also via the symlink
+BUDGET_USD="${CCASK_BUDGET:-0.25}"      # hard cap per question
+TIME_LIMIT="${CCASK_TIMEOUT:-300}"      # seconds
+MODEL="${CCASK_MODEL:-haiku}"           # e.g. CCASK_MODEL=sonnet when haiku misjudges
+MAX_TOOLS="${CCASK_MAX_TOOLS:-15}"      # tool calls the agent may make, enforced by ccask-guard
+FENCE="${AGENT_FENCE:-agent-fence}"     # macOS sandbox wrapper, ~/Desktop/agent-fence
+ROOTS=("$HOME/.claude/projects" "$HOME/.claude-propagenda/projects")
+
+die() { echo "ccask: $1" >&2; exit "${2:-1}"; }
+
+SCHEMA='{"type":"object","additionalProperties":false,"required":["status","best_id","why","also"],
+"properties":{"status":{"enum":["found","not_found"]},"best_id":{"type":"string"},"why":{"type":"string"},
+"also":{"type":"array","maxItems":2,"items":{"type":"object","additionalProperties":false,
+"required":["id","why"],"properties":{"id":{"type":"string"},"why":{"type":"string"}}}}}}'
+
+# For each session id (or unique prefix) given as an argument, print "date  title" and the
+# resume line ccfind itself builds, so the model never writes one. Exit 1 if any id is unknown.
+describe_ids() {
+  CCASK_ACCOUNT="${account:-}" python3 -I - "$(readlink -f "$(command -v ccfind)")" "$@" <<'PY'
+import importlib.machinery, json, os, sys
+m = importlib.machinery.SourceFileLoader("ccfind", sys.argv[1]).load_module()
+# The full index, not sessions.tsv: that file holds only the last search's (possibly -p scoped) rows.
+index = json.load(open(m.INDEX_PATH))
+bad = 0
+for given in sys.argv[2:]:
+    sid, err = m.resolve_sid(given)
+    info = index.get(sid) if not err else None
+    if not info:
+        print(f"ccask: WARNING: {err or repr(given) + ' is not a known session'}; ignore it",
+              file=sys.stderr)
+        bad = 1
+        continue
+    root = m.ACCOUNTS.get(os.environ.get("CCASK_ACCOUNT", ""))
+    if root and not os.path.realpath(info["path"]).startswith(os.path.realpath(root) + os.sep):
+        print(f"ccask: WARNING: {sid} is outside the {os.environ['CCASK_ACCOUNT']!r} account; ignore it",
+              file=sys.stderr)
+        bad = 1
+        continue
+    cwd = title = date = ""
+    with open(info["path"], errors="replace") as fh:
+        for line in fh:
+            if not cwd and '"cwd"' in line:
+                cwd = json.loads(line).get("cwd", "")
+            if '"ai-title"' in line:
+                title = json.loads(line).get("aiTitle", title)
+            if '"timestamp"' in line:
+                date = json.loads(line).get("timestamp", date)[:10] or date
+    print(f"{date}  {title}\n    {m.resume_line(sid, cwd)}")
+sys.exit(bad)
+PY
+}
+
+USAGE='usage: ccask [-a claude|propagenda|all] [--agent] [--copy|--no-copy] [--] "words or a phrase you remember"'
+
+# Same list as ccfind's AGENT_VARS (test.sh checks they agree). CCFIND_AGENT=1/0 overrides.
+AGENT_VARS=(CLAUDECODE AI_AGENT OPENCODE CURSOR_AGENT CODEX_SANDBOX)
+run_by_agent() {
+  case "${CCFIND_AGENT:-}" in 1) return 0 ;; 0) return 1 ;; esac
+  local v; for v in "${AGENT_VARS[@]}"; do [ -n "${!v:-}" ] && return 0; done
+  return 1
+}
+
+main() {
+  local account="" words=() agent=0 copy=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -a|--account)
+        [ $# -ge 2 ] || die "-a needs one of: claude, propagenda, all" 2
+        account=$(tr '[:upper:]' '[:lower:]' <<<"$2")
+        case "$account" in
+          claude|default) account=claude ;;
+          propagenda) ;;
+          all|global) account="" ;;
+          *) die "-a needs one of: claude, propagenda, all (got '$2')" 2 ;;
+        esac
+        shift 2 ;;
+      -h|--help) echo "$USAGE"; exit 0 ;;
+      --agent) agent=1; shift ;;
+      --copy) copy=1; shift ;;
+      --no-copy) copy=0; shift ;;
+      --) shift; words+=("$@"); break ;;
+      -?*) die "unknown option '$1' (use -- to ask about words that start with a dash)" 2 ;;
+      *) words+=("$1"); shift ;;
+    esac
+  done
+  local query="${words[*]:-}"
+  [ -n "${query// /}" ] || { echo "$USAGE" >&2; exit 2; }
+  local scope=()
+  [ -n "$account" ] && scope=(-a "$account")
+  [ $agent = 1 ] || ! run_by_agent || agent=1
+  [ -n "$copy" ] || { [ $agent = 1 ] && copy=0 || copy=1; }
+  [ $agent = 1 ] && scope+=(--agent)    # also makes ccfind skip the caller's own session
+  local bin
+  for bin in claude ccfind jq gtimeout python3 "$FENCE"; do
+    command -v "$bin" >/dev/null || die "$bin not found on PATH"
+  done
+  [ -f "$DIR/ccask-system.md" ] || die "missing $DIR/ccask-system.md"
+  # fail closed: never run the agent without its guard and sandbox
+  [ -x "$DIR/ccask-guard" ] || die "missing or not executable: $DIR/ccask-guard"
+
+  echo "ccask: ranking candidates with ccfind…" >&2
+  local cands rc
+  cands=$(ccfind -n --no-copy ${scope[@]+"${scope[@]}"} -- "$query" 2>&1); rc=$?
+  # exit 1 with "No matches." is a valid answer for the agent; anything else is a crash
+  if [ $rc -ne 0 ] && ! grep -qE 'No matches|No indexed sessions|No sessions found' <<<"$cands"; then
+    die "ccfind failed (exit $rc): $(tail -3 <<<"$cands")"
+  fi
+
+  local prompt="User's words: $query
+${account:+
+Account filter: only sessions of the '$account' account count. Add -a $account to every
+ccfind -n call you make.
+}
+ccfind -n candidates for those words:
+$cands"
+
+  echo "ccask: asking $MODEL (cap \$$BUDGET_USD, ${TIME_LIMIT}s)…" >&2
+  local err="$DIR/.ccask-last-stderr" out    # overwritten each run, kept for debugging
+  local counter; counter=$(mktemp "${TMPDIR:-/tmp}/ccask-tools.XXXXXX") || die "mktemp failed"
+  local settings
+  settings=$(jq -cn --arg g "$DIR/ccask-guard" \
+    '{hooks: {PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $g}]}]}}')
+  # Prompt goes on stdin: --allowedTools / --add-dir are variadic and would swallow it.
+  out=$(cd "$DIR" && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="$HOME/.claude-propagenda" \
+    CCASK_GUARD_COUNT="$counter" CCASK_MAX_TOOLS="$MAX_TOOLS" CCASK_DIR="$DIR" DISABLE_AUTOUPDATER=1 \
+    gtimeout "$TIME_LIMIT" "$FENCE" --read-only \
+      --allow-write "${XDG_CACHE_HOME:-$HOME/.cache}/ccfind" \
+      --protect "$HOME/.claude/projects" --protect "$HOME/.claude-propagenda/projects" -- \
+    claude -p --model "$MODEL" --settings "$settings" \
+      --system-prompt "$(cat "$DIR/ccask-system.md")" \
+      --tools "Bash,Read,Grep,Glob" \
+      --allowedTools "Bash(ccfind -n:*)" "Bash(ccfind read:*)" Read Grep Glob StructuredOutput \
+      --add-dir "${ROOTS[@]}" \
+      --strict-mcp-config --setting-sources "" --disable-slash-commands \
+      --no-session-persistence --max-budget-usd "$BUDGET_USD" --output-format stream-json --verbose \
+      --json-schema "$SCHEMA" \
+      2>"$err"); rc=$?
+  local errtxt; errtxt=$(tail -5 "$err")
+  # every event (tool calls, tool results, answer) for diagnosis; overwritten each run
+  printf '%s' "$out" > "$DIR/.ccask-last-stream.jsonl"
+  local stream=$out
+  out=$(printf '%s' "$stream" | jq -c 'select(type == "object" and .type? == "result")' 2>/dev/null | tail -1)
+  printf '%s' "$out" > "$DIR/.ccask-last-output.json"   # the final result event
+
+  if [ $rc -eq 124 ]; then
+    echo "ccask: timed out after ${TIME_LIMIT}s (raise CCASK_TIMEOUT); the ccfind ranking:" >&2
+    echo "$cands"
+    exit 1
+  fi
+  if [ -z "$out" ]; then
+    die "claude failed (exit $rc): ${errtxt:-$(tail -5 <<<"$stream")}"
+  fi
+
+  local subtype ans cost turns
+  subtype=$(jq -r '.subtype // "?"' <<<"$out")
+  # structured_output is the schema'd answer; some runs put the same JSON in .result as text
+  ans=$(jq -c '.structured_output // (.result // "" | gsub("^\\s*```(json)?\\s*|\\s*```\\s*$"; "")
+               | try fromjson catch empty | select(type == "object" and has("status")))' <<<"$out")
+  if [ -z "$ans" ]; then
+    # Last resort: the model wrote the answer as prose ("best_id": "…"). The id is still
+    # checked against the index and the account below, and the resume line is still ours.
+    ans=$(jq -c '(.result // "") | capture("best_id\\W+(?<id>[0-9a-f]{8}(-[0-9a-f]{4}){0,3}(-[0-9a-f]{12})?)")
+                 | {status: "found", best_id: .id, why: "(recovered from the model'"'"'s text answer)", also: []}' \
+            2>/dev/null <<<"$out")
+  fi
+  cost=$(jq -r '.total_cost_usd // 0' <<<"$out")
+  turns=$(jq -r '.num_turns // "?"' <<<"$out")
+
+  if [ "$(jq -r '.is_error // false' <<<"$out")" = "true" ] || [ "$subtype" != "success" ] || [ -z "$ans" ]; then
+    case "$subtype" in
+      *budget*) echo "ccask: hit the \$$BUDGET_USD cap after $turns turns (raise CCASK_BUDGET)" >&2 ;;
+      success)  echo "ccask: claude returned no structured answer" >&2 ;;
+      *)        echo "ccask: claude reported an error ($subtype)" >&2 ;;
+    esac
+    printf 'ccask: %s, %s turns, $%.4f (raw response: %s)\n' "$MODEL" "$turns" "$cost" \
+      "$DIR/.ccask-last-output.json" >&2
+    echo "ccask: falling back to the ccfind ranking:" >&2
+    echo "$cands"
+    exit 1
+  fi
+
+  local status best why d rc=0
+  status=$(jq -r .status <<<"$ans"); best=$(jq -r .best_id <<<"$ans"); why=$(jq -r .why <<<"$ans")
+  if [ "$status" = "found" ] && [ -n "$best" ]; then
+    d=$(describe_ids "$best") || rc=1
+    [ -n "$d" ] && echo "BEST  $d"
+    if [ -n "$d" ] && [ "$copy" = 1 ]; then
+      local line; line=$(tail -1 <<<"$d" | sed 's/^ *//')
+      printf '%s' "$line" | pbcopy 2>/dev/null && echo "ccask: copied to clipboard: $line" >&2
+    fi
+  else
+    echo "NOT FOUND"; rc=1
+  fi
+  echo "WHY   $why"
+  local id w
+  while IFS=$'\t' read -r id w; do
+    [ -n "$id" ] || continue
+    d=$(describe_ids "$id") || rc=1
+    [ -n "$d" ] && echo "ALSO  $d  — $w"
+  done < <(jq -r '.also[] | [.id, .why] | @tsv' <<<"$ans")
+  printf 'ccask: %s, %s turns, %s tool calls (limit %s), $%.4f\n' "$MODEL" "$turns" \
+    "$(cat "$counter" 2>/dev/null || echo 0)" "$MAX_TOOLS" "$cost" >&2
+  return $rc
+}
+
+[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"

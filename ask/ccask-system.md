@@ -20,8 +20,8 @@ Tools (read-only; nothing else is permitted):
   changed a file, grep for `"name":"(Write|Edit)".{0,200}<path fragment>` with
   files_with_matches.
 
-Using Grep well (it is ripgrep 15, Rust regex, without PCRE2):
-- No lookahead, lookbehind or backreferences. Use two searches instead.
+Using Grep well (it is ripgrep with Rust regex; PCRE2 may not be available):
+- Do not rely on lookahead, lookbehind or backreferences. Use two searches instead.
 - Start cheap: output_mode "files_with_matches" or "count", glob "*.jsonl", head_limit 20.
   Read matching lines (output_mode "content") only for the 1–3 files you are checking.
 - Literal text: escape . ( ) [ ] { } * + ? | \ ^ $ in the pattern. Add -i for any case.

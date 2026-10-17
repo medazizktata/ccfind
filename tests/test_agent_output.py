@@ -81,12 +81,15 @@ class PipedRowTests(unittest.TestCase):
     def test_the_piped_id_is_shortened(self):
         _code, out = run([msg(UUID4[0], "please migrate the billing database")], "billing")
         self.assertTrue(out.startswith(UUID4[0][:13] + " "), out)
-        self.assertNotIn(UUID4[0], out)
+        # ccfind: the full id appears only in the resume line under the entry
+        full = [l for l in out.splitlines() if UUID4[0] in l]
+        self.assertEqual(len(full), 1, out)
+        self.assertIn("--resume " + UUID4[0], full[0])
 
     def test_the_output_names_the_command_that_opens_a_hit(self):
         """The next thing a program wants is one of these sessions. Say so in the output."""
         _code, out = run([msg("sid1", "please migrate the billing database")], "billing")
-        self.assertIn("agsearch read", out)
+        self.assertIn("ccfind read", out)
 
 
 class ElideTests(unittest.TestCase):

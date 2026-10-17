@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# ccfind: agsearch 0.2.0 (MIT, github.com/devcodes9/agsearch) patched by ~/Desktop/ccfind/patch_ccfind.py
+# to also search ~/.claude-propagenda. Re-run the patch after upgrading agsearch.
 """
 agsearch — global full-text search across all your coding agent sessions.
 
@@ -20,6 +22,10 @@ Usage:
     agsearch read <session-id>     # print a whole session, without resuming it
     agsearch --here "..."          # only sessions from the current directory's project
     agsearch --project myapp       # only sessions whose path matches 'myapp'
+    agsearch -a propagenda "..."   # one Claude account: claude, propagenda, all (default)
+    agsearch -- "--resume"         # search for words that start with a dash
+    agsearch --agent "..."         # agent mode: plain list, no clipboard, skips the caller's session
+    agsearch -n --no-copy "..."    # -n copies the top resume line for humans; this stops it
     agsearch --thinking            # also index assistant thinking blocks
     agsearch --reindex             # force a full rebuild of the cache
     agsearch --version             # print the installed version and exit
@@ -59,12 +65,15 @@ import subprocess
 
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
+# ccfind: also index the propagenda config dir, resumed through its own launcher.
+PROPAGENDA_DIR = os.path.join(HOME, ".claude-propagenda", "projects")
+PROPAGENDA_BIN = os.path.join(HOME, ".claude-propagenda", "mcp-launch.sh")
 CODEX_DIR = os.path.join(HOME, ".codex", "sessions")
 GEMINI_DIR = os.path.join(HOME, ".gemini", "tmp")
 CURSOR_DIR = os.path.join(HOME, ".cursor", "projects")
 CURSOR_CHATS_DIR = os.path.join(HOME, ".cursor", "chats")   # titles only; see _cursor_titles
 OPENCODE_DIR = os.path.join(HOME, ".local", "share", "opencode")
-CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "agsearch")
+CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "ccfind")
 FRAG_DIR = os.path.join(CACHE_DIR, "frag")
 META_PATH = os.path.join(CACHE_DIR, "meta.json")
 SESSIONS_PATH = os.path.join(CACHE_DIR, "sessions.tsv")   # one line per session, for _filter
@@ -601,7 +610,7 @@ def _is_opencode_db(path):
 #   launch_dir  resume is scoped to the directory the session was started in
 SOURCES = {
     "cc": {
-        "roots": [PROJECTS_DIR], "match": _is_jsonl, "parse": None,
+        "roots": [PROJECTS_DIR, PROPAGENDA_DIR], "match": _is_jsonl, "parse": None,
         "label": "claude", "colour": "34",
         "resume": ("id", ["claude", "--resume", "{sid}"]),
         "subagents": True, "launch_dir": True,
@@ -926,12 +935,7 @@ def build_index(include_thinking=False, force=False):
                 root = (old_index.get(sid0) or {}).get("root")
                 index[sid0]["root"] = root or _root_uuid(path)
 
-    for fn in os.listdir(FRAG_DIR):     # drop fragments for deleted sessions
-        if fn not in live_frags:
-            try:
-                os.remove(os.path.join(FRAG_DIR, fn))
-            except OSError:
-                pass
+    # ccfind: stale fragments are left in place (no deletes); they are never read again.
 
     progress.done_()
 
@@ -944,7 +948,38 @@ def build_index(include_thinking=False, force=False):
 
 # ------------------------------------------------------------------ filtering
 
-def apply_scope(lines, here=False, project=None):
+# Set by the agent CLIs in their shells (verified 2026-10-17 for claude, opencode, cursor-agent;
+# CODEX_SANDBOX is unverified: codex could not run here). CCFIND_AGENT=1/0 overrides.
+# ccask keeps the same list: test.sh checks they agree.
+AGENT_VARS = ("CLAUDECODE", "AI_AGENT", "OPENCODE", "CURSOR_AGENT", "CODEX_SANDBOX")
+CALLER_ID_VARS = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CURSOR_CONVERSATION_ID")
+AGENT = False      # set in main()
+COPY = False       # set in main()
+
+
+def run_by_agent():
+    o = os.environ.get("CCFIND_AGENT", "")
+    if o in ("0", "1"):
+        return o == "1"
+    return any(os.environ.get(v) for v in AGENT_VARS)
+
+
+ACCOUNTS = {"claude": PROJECTS_DIR, "default": PROJECTS_DIR, "propagenda": PROPAGENDA_DIR,
+            "all": None, "global": None}
+
+
+def apply_scope(lines, here=False, project=None, account=None):
+    root = ACCOUNTS.get(account)
+    if root:
+        # index.json is rewritten by build_index on every run, so it is current here
+        try:
+            index = json.load(open(INDEX_PATH))
+        except (OSError, json.JSONDecodeError):
+            index = {}
+        real = os.path.realpath(root) + os.sep
+        keep = {s for s, i in index.items()
+                if os.path.realpath(i.get("path", "")).startswith(real)}
+        lines = [l for l in lines if l.split(SEP, 1)[0] in keep]
     if here:
         cwd = os.getcwd()
         lines = [l for l in lines
@@ -1050,6 +1085,12 @@ def print_matches(lines, query, limit=20):
         rows.sort(key=lambda f: f[C_DATE], reverse=True)
         rows.sort(key=lambda f: f[C_KIND] == "auto")
         hits = [(0, f) for f in rows]
+    caller = {os.environ.get(v, "") for v in CALLER_ID_VARS} - {""}
+    if AGENT and caller:
+        kept = [(m, f) for m, f in hits if f[C_SID] not in caller]
+        if len(kept) < len(hits):
+            print("(skipped the session you are calling from)", file=sys.stderr)
+        hits = kept
     if not hits:
         print("No matches.", file=sys.stderr)
         return 1
@@ -1062,15 +1103,20 @@ def print_matches(lines, query, limit=20):
     pad = _isatty(sys.stdout)
     idlen = 36 if pad else _short_id_len([f[C_SID] for f in rows])
     _emit("\n".join(_match_entry(f, m, len(qterms), texts.get(f[C_SID], []), keys, idlen, pad)
+                    + "\n    " + resume_line(f[C_SID], f[C_CWD])
                     for m, f in hits[:limit]) + "\n")
+    if COPY:
+        top = resume_line(hits[0][1][C_SID], hits[0][1][C_CWD])
+        if copy_to_clipboard(top):
+            print(f"copied to clipboard: {top}", file=sys.stderr)
     extra = len(hits) - limit
     if extra > 0:
-        print(f"... and {extra} more (narrow the query, or run agsearch for the TUI).",
+        print(f"... and {extra} more (narrow the query, or run ccfind for the TUI).",
               file=sys.stderr)
     if not pad:
         # Whoever is reading this is a program, and the next thing it wants is one of these
         # sessions. Naming the command here means it does not have to be told anywhere else.
-        print("open one: agsearch read <id>  (the id is the first field above)")
+        print("open one: ccfind read <id>  (the id is the first field above)")
     return 0
 
 
@@ -1100,8 +1146,8 @@ def resolve_sid(sid):
 
 
 def _session_path(sid):
-    if os.path.isdir(PROJECTS_DIR):
-        for root, _dirs, files in os.walk(PROJECTS_DIR):
+    for base in (PROJECTS_DIR, PROPAGENDA_DIR):
+        for root, _dirs, files in os.walk(base):
             if sid + ".jsonl" in files:
                 return os.path.join(root, sid + ".jsonl")
     return None
@@ -1605,6 +1651,8 @@ def resume_plan(sid, cwd):
     kind, template = rec["resume"]
     handle = info.get("path", "") if kind == "path" else sid
     argv = [a.replace("{sid}", sid).replace("{path}", handle) for a in template]
+    if source == "cc" and info.get("path", "").startswith(PROPAGENDA_DIR + os.sep):
+        argv[0] = PROPAGENDA_BIN
     bin_ = argv[0]
 
     # Claude looks for the session in the project of whatever directory it starts in, so resume
@@ -1621,7 +1669,7 @@ def resume_plan(sid, cwd):
 
 def resume_command(target, argv):
     """A shell line you can paste. Worktree paths contain spaces often enough to quote."""
-    cmd = " ".join(argv)
+    cmd = " ".join(argv).replace(PROPAGENDA_BIN, "claude-propagenda")
     return f"cd {shlex.quote(target)} && {cmd}" if target else cmd
 
 
@@ -2131,8 +2179,8 @@ def main(argv):
             copy_to_clipboard(resume_line(sid, cwd))
         return 0
 
-    no_fzf = no_resume = here = thinking = reindex = fuzzy = False
-    project = None
+    no_fzf = no_resume = here = thinking = reindex = fuzzy = agent_flag = False
+    project = account = copy_flag = None
     query_parts = []
     i = 0
     while i < len(argv):
@@ -2151,22 +2199,47 @@ def main(argv):
             reindex = True
         elif a in ("-p", "--project"):
             i += 1
-            project = argv[i] if i < len(argv) else None
+            if i >= len(argv) or not argv[i].strip():
+                print("ccfind: -p needs a folder name, e.g. -p Propagenda", file=sys.stderr)
+                return 2
+            project = argv[i]
+        elif a in ("-a", "--account"):
+            i += 1
+            account = argv[i].strip().lower() if i < len(argv) else ""
+            if account not in ACCOUNTS:
+                print("ccfind: -a needs one of: claude (~/.claude), propagenda "
+                      "(~/.claude-propagenda), all", file=sys.stderr)
+                return 2
+        elif a == "--":                  # everything after is query, even if it starts with -
+            query_parts.extend(argv[i + 1:])
+            break
         elif a in ("-h", "--help"):
             print(__doc__)
             return 0
         elif a in ("-V", "--version"):
             print("agsearch " + __version__)
             return 0
+        elif a == "--agent":             # agent mode: implies -n, no clipboard
+            agent_flag = no_fzf = True
+        elif a in ("--copy", "--no-copy"):
+            copy_flag = a == "--copy"
+        elif a.startswith("-") and len(a) > 1:
+            print(f"ccfind: unknown option {a!r} (ccfind -h lists them; use -- to search for it)",
+                  file=sys.stderr)
+            return 2
         else:
             query_parts.append(a)
         i += 1
 
     query = " ".join(query_parts)
+    global AGENT, COPY
+    AGENT = agent_flag or run_by_agent()
+    COPY = (not AGENT) if copy_flag is None else copy_flag
     lines = build_index(include_thinking=thinking, force=reindex)
-    lines = apply_scope(lines, here=here, project=project)
+    lines = apply_scope(lines, here=here, project=project, account=account)
     if not lines:
-        print("No indexed sessions found.", file=sys.stderr)
+        print(f"No sessions found for account {account!r}." if ACCOUNTS.get(account)
+              else "No indexed sessions found.", file=sys.stderr)
         return 1
 
     if no_fzf:

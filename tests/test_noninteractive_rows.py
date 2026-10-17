@@ -40,7 +40,9 @@ class NonInteractiveTests(unittest.TestCase):
         lines = [msg("sid1", "please migrate the billing database"),
                  msg("sid1", "the billing database migration is done", role="assistant")]
         _code, out = run(lines, "billing")
-        self.assertEqual(out.count("sid1"), 1, out)
+        # ccfind: one entry (its header leads with the id); the resume line repeats the id
+        self.assertEqual(sum(l.startswith("sid1 ") for l in out.splitlines()), 1, out)
+        self.assertEqual(out.count("--resume sid1"), 1, out)
 
     def test_the_entry_leads_with_the_session_id(self):
         """The id is the handle `agsearch read <sid>` takes. Without it a hit is unopenable."""

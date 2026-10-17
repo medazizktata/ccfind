@@ -7,3 +7,9 @@ gold.jsonl
 gold.local.jsonl
 gold-sessions.tsv
 gold-meta.json
+
+# ccfind
+ask/.ccask-last-*
+harness/.sbprobe
+.archive/
+__pycache__/

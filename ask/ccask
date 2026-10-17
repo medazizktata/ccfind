@@ -9,7 +9,7 @@ BUDGET_USD="${CCASK_BUDGET:-0.25}"      # hard cap per question
 TIME_LIMIT="${CCASK_TIMEOUT:-300}"      # seconds
 MODEL="${CCASK_MODEL:-haiku}"           # e.g. CCASK_MODEL=sonnet when haiku misjudges
 MAX_TOOLS="${CCASK_MAX_TOOLS:-15}"      # tool calls the agent may make, enforced by ccask-guard
-FENCE="${AGENT_FENCE:-agent-fence}"     # macOS sandbox wrapper, ~/Desktop/agent-fence
+FENCE="${AGENT_FENCE:-agent-fence}"     # macOS sandbox wrapper: github.com/medazizktata/agent-fence
 ROOTS=("$HOME/.claude/projects" "$HOME/.claude-propagenda/projects")
 
 die() { echo "ccask: $1" >&2; exit "${2:-1}"; }

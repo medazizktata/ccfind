@@ -27,7 +27,7 @@ unless you know where the session was started.
 |---|---|---|---|
 | **ccfind** (this repo) | find and resume | free, ~10 s | the everyday tool |
 | **ccfind ask** (`ask/`) | Haiku agent for vague memories | ~$0.03–0.20 | experimental: right best match 1 in 3 on the hard test |
-| **agent-fence** (`~/Desktop/agent-fence`) | macOS sandbox for any agent CLI | free | separate project; `ccfind ask` requires it |
+| **[agent-fence](https://github.com/medazizktata/agent-fence)** | macOS sandbox for any agent CLI | free | separate project; `ccfind ask` requires it |
 
 Reach for `ask` only when `ccfind -n` fails. Its agent is fenced from outside: a guard hook
 allows only `ccfind` and transcript reads (15 calls at most), and agent-fence blocks file

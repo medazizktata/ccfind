@@ -26,7 +26,7 @@ unless you know where the session was started.
 | Part | Job | Cost | Status |
 |---|---|---|---|
 | **ccfind** (this repo) | find and resume | free, ~10 s | the everyday tool |
-| **ccfind ask** (`ask/`) | Haiku agent for vague memories | ~$0.03–0.20 | experimental: right best match 1 in 3 on the hard test |
+| **ccfind ask** (`ask/`) | Haiku agent for vague memories | ~$0.003 per question, capped at $0.25 | 11/12 right, 0 wrong on a 12-question benchmark (2026-10-20); Sonnet also 11/12 at ~$0.06 |
 | **[agent-fence](https://github.com/medazizktata/agent-fence)** | macOS sandbox for any agent CLI | free | separate project; `ccfind ask` requires it |
 
 Reach for `ask` only when `ccfind -n` fails. Its agent is fenced from outside: a guard hook

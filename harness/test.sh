@@ -53,10 +53,16 @@ if [ $CALIBRATE = 1 ]; then
   sed 's/^    return any(os.environ.get(v) for v in AGENT_VARS)$/    return False  # sabotaged/' \
     "$CCFIND_BIN" > "$C/ccfind-no-agent-detect"
   chmod +x "$C/ccfind-no-agent-detect"
+  sed 's/^    skip |= set(os.environ.get("CCFIND_EXCLUDE".*$/    pass  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-no-exclude"
+  chmod +x "$C/ccfind-no-exclude"
   for d in ask ask-openguard ask-opensb; do
     mkdir -p "$C/$d"; cp "$ASK/ccask-system.md" "$ASK/ccask-guard" "$CCASK_BIN" "$C/$d/"
   done
   sed 's/^        bad = 1$/        pass  # sabotaged/' "$CCASK_BIN" > "$C/ask/ccask"
+  mkdir -p "$C/ask-noexclude"; cp "$ASK/ccask-system.md" "$ASK/ccask-guard" "$C/ask-noexclude/"
+  sed 's/^    CCFIND_EXCLUDE="${exclude#,}" /    CCFIND_EXCLUDE="" sabotaged=1 /' "$CCASK_BIN" > "$C/ask-noexclude/ccask"
+  mkdir -p "$C/ask-nohide"; cp "$ASK/ccask-system.md" "$ASK/ccask-guard" "$C/ask-nohide/"
+  sed 's/do \[ -e "$f" \] && hide+=(--hide "$f"); done/do :; done  # sabotaged/' "$CCASK_BIN" > "$C/ask-nohide/ccask"
   printf '#!/bin/sh\n# sabotaged: allows every tool call\ncat >/dev/null; exit 0\n' > "$C/ask-openguard/ccask-guard"
   printf '#!/bin/bash\n# sabotaged: no sandbox at all\nwhile [ $# -gt 0 ]; do case "$1" in --) shift; break ;; --allow-write|--protect|--workspace) shift 2 ;; -*) shift ;; *) break ;; esac; done\nexec "$@"\n' > "$C/fence-open"
   chmod +x "$C/fence-open"
@@ -66,8 +72,11 @@ if [ $CALIBRATE = 1 ]; then
               "ccfind without propagenda routing|CCFIND_BIN=$C/ccfind-no-routing" \
               "ccfind without account filter|CCFIND_BIN=$C/ccfind-no-account" \
               "ccfind that never detects agents|CCFIND_BIN=$C/ccfind-no-agent-detect" \
+              "ccfind that ignores CCFIND_EXCLUDE|CCFIND_BIN=$C/ccfind-no-exclude" \
               "ccask that accepts invented ids|CCASK_BIN=$C/ask/ccask" \
               "guard that allows every tool call|CCASK_BIN=$C/ask-openguard/ccask" \
+              "ccask that leaks the caller's session to its agent|CCASK_BIN=$C/ask-noexclude/ccask" \
+              "ccask that lets its agent read the caller's transcript|CCASK_BIN=$C/ask-nohide/ccask" \
               "sandbox that allows every write|AGENT_FENCE=$C/fence-open"; do
     label=${spec%%|*}; envset=${spec#*|}
     # count rows changed by the sabotage; a sed that matched nothing would test nothing
@@ -116,7 +125,8 @@ ln -s "$CCFIND_BIN" "$T/bin/ccfind"
 cat > "$T/bin/claude" <<'STUB'
 #!/bin/bash
 # stub claude: records how it was called, answers per $STUB_MODE
-printf '%s\n' "$@" > "$STUB_LOG.args"; cat > "$STUB_LOG.stdin"
+printf '%s\n' "$@" > "$STUB_LOG.args"; cat > "$STUB_LOG.stdin"; printf '%s' "${CCFIND_EXCLUDE-unset}" > "$STUB_LOG.exclude"
+[ -n "${STUB_READ:-}" ] && { cat "$STUB_READ" >/dev/null 2>&1 && echo read || echo blocked; } > "$STUB_LOG.read"
 head='"type":"result","num_turns":3,"total_cost_usd":0.0123'
 case "${STUB_MODE:-ok}" in
   ok)       printf '{%s,"subtype":"success","is_error":false,"result":"","structured_output":{"status":"found","best_id":"%s","why":"stub","also":[]}}' "$head" "$STUB_ID" ;;
@@ -159,6 +169,10 @@ D=dddddddd-0000-4000-8000-000000000004
 FA=$(mk claude     $A "$T/work/alpha" "$T/work/alpha"     "Alpha zebrafinch" "zebrafinch invoice alpha")
 mk propagenda $B "$T/work/beta"  "$T/work/beta/sub" "Beta quokka"      "quokka invoice beta" >/dev/null
 mk propagenda $C "$T/work/gamma" "$T/work/gamma"    "Gamma marmoset"   "marmoset gamma --frobnicate" >/dev/null
+E=eeeeeeee-0000-4000-8000-000000000005   # a cursor-agent session: no title or timestamp fields
+mkdir -p "$T/.cursor/projects/work-epsilon/agent-transcripts/$E"
+printf '{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\\narmadillo epsilon setup\\n</user_query>"}]}}\n' \
+  > "$T/.cursor/projects/work-epsilon/agent-transcripts/$E/$E.jsonl"
 echo "offline tests (throwaway HOME: $T)"
 
 # ---------------------------------------------------------------- ccfind
@@ -236,6 +250,8 @@ STUB_MODE=ok run "$CCASK_BIN" -a claude invoice
 check "-a claude rejects an answer from the other account" 1 "+outside the 'claude' account"
 STUB_ID=deadbeef-0000-4000-8000-00000000dead STUB_MODE=ok run "$CCASK_BIN" invoice
 check "an invented session id is rejected"       1 "+WARNING" "-claude-propagenda --resume deadbeef"
+STUB_ID=$E STUB_MODE=ok run "$CCASK_BIN" armadillo
+check "ccask shows date and title of a non-Claude session" 0 "+BEST  20" "+armadillo epsilon setup" "+cursor-agent --resume $E"
 STUB_MODE=textjson run "$CCASK_BIN" invoice
 check "JSON written as text is still accepted"   0 "~^BEST " "+$B"
 STUB_MODE=proseid run "$CCASK_BIN" invoice
@@ -285,6 +301,16 @@ run "${no_agent_env[@]}" CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=$A ccfind -n invoic
 check "agent mode skips the calling session" 0 "+skipped the session you are calling from" "-$A" "+$B"
 run ccfind -n invoice
 check "human mode keeps every session" 0 "+$A" "+$B" "-skipped"
+run env CCFIND_EXCLUDE=$A ccfind -n invoice
+check "CCFIND_EXCLUDE skips that session" 0 "+skipped the session you are calling from" "-$A" "+$B"
+STUB_MODE=ok run "${no_agent_env[@]}" CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=$A "$CCASK_BIN" invoice
+OUT="exclude=[$(cat "$STUB_LOG.exclude")]"
+check "ccask passes the caller's session to its agent as CCFIND_EXCLUDE" 0 "+exclude=[$A]"
+STUB_MODE=ok STUB_READ=$FA run "${no_agent_env[@]}" CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=$A "$CCASK_BIN" invoice
+seen="caller=[$(cat "$STUB_LOG.read")]"
+STUB_MODE=ok STUB_READ=$FA run "${no_agent_env[@]}" CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=$B "$CCASK_BIN" invoice
+OUT="$seen other=[$(cat "$STUB_LOG.read")]"
+check "ccask hides the caller's transcript from its agent, not others" 0 "+caller=[blocked]" "+other=[read]"
 : > "$CLIP_LOG"; STUB_MODE=ok run "$CCASK_BIN" invoice
 OUT="$OUT
 pbcopy-calls=$(grep -c . "$CLIP_LOG")

@@ -181,10 +181,14 @@ Run `./harness/test.sh` and `uvx pytest -q tests` after every change; both must 
   routing, launch dir, `-a`, option errors, index updates and no deletes, plus every ccask
   path: answer, invented id, wrong account, JSON as text, no answer, budget, error, crash,
   timeout, and the locked-down flags.
-- `--calibrate`: re-runs the suite against a do-nothing ccfind and three sabotaged builds
-  (no routing, no account filter, ccask accepting invented ids). Each must produce failures.
+- `--calibrate`: re-runs the suite against a do-nothing ccfind and sabotaged builds (no
+  routing, no account filter, no agent detection, no CCFIND_EXCLUDE, ccask accepting invented
+  ids, ccask not passing or not hiding the caller's session). Each must produce failures.
   It also tries an allow-all guard and an allow-all sandbox.
-  2026-10-17: caught with 27, 2, 4, 2, 11 and 1 failing checks; the unmodified build passes.
+  2026-10-20: all 10 caught; the unmodified build passes.
+- Calling session: in agent mode ccask passes the caller's session id to its agent as
+  `CCFIND_EXCLUDE` and hides its transcript with `agent-fence --hide`. Without that, the agent
+  found the calling session with Grep and cited it (2 of 12 benchmark runs, 2026-10-20).
   The open-sandbox run writes `harness/.sbprobe` (2 bytes). That file is expected
   and gets overwritten each time.
 - `--real`: free checks on real transcripts (gated invoice page → 0546caa9 in the top 3).

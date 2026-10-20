@@ -20,7 +20,7 @@ Usage:
     agsearch "stripe tax id"       # open the TUI pre-filtered to this query
     agsearch -n "stripe tax id"    # non-interactive: ranked sessions as plain text, no fzf
     agsearch read <session-id>     # print a whole session, without resuming it
-    agsearch ask "..."             # optional AI fallback (Haiku agent, ~$0.03-0.20; see ask/)
+    agsearch ask "..."             # optional AI fallback (Haiku agent, ~$0.003, at most $0.25; see ask/)
     agsearch --here "..."          # only sessions from the current directory's project
     agsearch --project myapp       # only sessions whose path matches 'myapp'
     agsearch -a propagenda "..."   # one Claude account: claude, propagenda, all (default)
@@ -1086,9 +1086,11 @@ def print_matches(lines, query, limit=20):
         rows.sort(key=lambda f: f[C_DATE], reverse=True)
         rows.sort(key=lambda f: f[C_KIND] == "auto")
         hits = [(0, f) for f in rows]
-    caller = {os.environ.get(v, "") for v in CALLER_ID_VARS} - {""}
-    if AGENT and caller:
-        kept = [(m, f) for m, f in hits if f[C_SID] not in caller]
+    skip = {os.environ.get(v, "") for v in CALLER_ID_VARS} if AGENT else set()
+    skip |= set(os.environ.get("CCFIND_EXCLUDE", "").split(","))   # ccask's agent has its own session id
+    skip.discard("")
+    if skip:
+        kept = [(m, f) for m, f in hits if f[C_SID] not in skip]
         if len(kept) < len(hits):
             print("(skipped the session you are calling from)", file=sys.stderr)
         hits = kept

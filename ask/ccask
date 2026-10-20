@@ -51,6 +51,14 @@ for given in sys.argv[2:]:
                 title = json.loads(line).get("aiTitle", title)
             if '"timestamp"' in line:
                 date = json.loads(line).get("timestamp", date)[:10] or date
+    if not (title and date):    # not a Claude transcript (cursor, codex…): use ccfind's index rows
+        try:
+            frag = open(m._frag_path(info["path"]), errors="replace").read().splitlines()
+        except OSError:
+            frag = []
+        g = next((s for s in m.group_sessions(frag) if s["sid"] == sid), None)
+        if g:
+            title, date, cwd = title or g["title"], date or g["date"][:10], cwd or g["cwd"]
     print(f"{date}  {title}\n    {m.resume_line(sid, cwd)}")
 sys.exit(bad)
 PY
@@ -96,6 +104,22 @@ main() {
   [ $agent = 1 ] || ! run_by_agent || agent=1
   [ -n "$copy" ] || { [ $agent = 1 ] && copy=0 || copy=1; }
   [ $agent = 1 ] && scope+=(--agent)    # also makes ccfind skip the caller's own session
+  # the inner agent runs under its own session id, so pass the caller's on for its ccfind calls
+  local exclude=${CCFIND_EXCLUDE:-} v
+  if [ $agent = 1 ]; then
+    for v in CLAUDE_CODE_SESSION_ID OPENCODE_SESSION_ID CURSOR_CONVERSATION_ID; do
+      [ -n "${!v:-}" ] && exclude+=",${!v}"
+    done
+  fi
+  # and hide those transcripts from it: its Grep and Read would otherwise find them directly
+  # shortcut: only Claude transcripts are hidden; a codex/opencode caller's session stays readable
+  local hide=() id r f
+  for id in ${exclude//,/ }; do
+    [[ $id =~ ^[0-9a-f-]+$ ]] || continue
+    for r in "${ROOTS[@]}"; do
+      for f in "$r"/*/"$id.jsonl" "$r"/*/"$id"; do [ -e "$f" ] && hide+=(--hide "$f"); done
+    done
+  done
   local bin
   for bin in claude ccfind jq gtimeout python3 "$FENCE"; do
     command -v "$bin" >/dev/null || die "$bin not found on PATH"
@@ -128,8 +152,8 @@ $cands"
     '{hooks: {PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $g}]}]}}')
   # Prompt goes on stdin: --allowedTools / --add-dir are variadic and would swallow it.
   out=$(cd "$DIR" && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="$HOME/.claude-propagenda" \
-    CCASK_GUARD_COUNT="$counter" CCASK_MAX_TOOLS="$MAX_TOOLS" CCASK_DIR="$DIR" DISABLE_AUTOUPDATER=1 \
-    gtimeout "$TIME_LIMIT" "$FENCE" --read-only \
+    CCFIND_EXCLUDE="${exclude#,}" CCASK_GUARD_COUNT="$counter" CCASK_MAX_TOOLS="$MAX_TOOLS" CCASK_DIR="$DIR" DISABLE_AUTOUPDATER=1 \
+    gtimeout "$TIME_LIMIT" "$FENCE" --read-only ${hide[@]+"${hide[@]}"} \
       --allow-write "${XDG_CACHE_HOME:-$HOME/.cache}/ccfind" \
       --protect "$HOME/.claude/projects" --protect "$HOME/.claude-propagenda/projects" -- \
     claude -p --model "$MODEL" --settings "$settings" \

@@ -43,10 +43,14 @@ There is no daemon, file watcher or hook. Each `ccfind` run (search box or `-n`)
 1. It walks `~/.claude/projects` and `~/.claude-second/projects` (`SOURCES["cc"]["roots"]`)
    and stats every `.jsonl`, subagent transcripts included.
 2. It compares each mtime with `~/.cache/ccfind/meta.json`:
-   - unchanged: reuse the cached fragment in `~/.cache/ccfind/frag/`
+   - unchanged: reuse the cached fragment in `~/.cache/ccfind/frag/` without reading it
+     (`filesids.json` says which sessions it holds; rows are read only for changed sessions
+     and for the sessions a search prints)
    - new, changed, or fragment missing: re-parse the **whole** file
    - deleted: drop its fragment
-3. It writes `sessions.tsv` (one row per session) and ranks against it.
+3. It writes `sessions.tsv` (one row per session; a session whose files are unchanged keeps
+   its row, tracked in `sessions.sig.json`) and ranks against it. `forkfam.json` caches fork
+   detection the same way.
 
 Consequences:
 - A transcript written a moment ago is searchable on the next run.

@@ -21,7 +21,11 @@ loader.exec_module(m)
 
 grouped = []
 real = m.group_sessions
-m.group_sessions = lambda ls: (grouped.append(len(ls)), real(ls))[1]
+def counted(ls):
+    ls = list(ls)                             # build_index returns a lazy object, not a list
+    grouped.append(len(ls))
+    return real(ls)
+m.group_sessions = counted
 
 lines = m.build_index()
 m.build_sessions(lines)                       # primes the session cache if the build has one
@@ -36,5 +40,5 @@ same = sorted(map(tuple, cached)) == sorted(map(tuple, full))
 moved = sum(1 for a, b in zip(cached, full) if a != b)
 print("sessions: cached %d, full %d; rows identical as a set: %s" % (len(cached), len(full), same))
 print("regrouped %d of %d rows on the cached run; %d positions differ in order (ties)" % (
-    regrouped, len(lines), moved))
+    regrouped, sum(1 for _ in lines), moved))
 sys.exit(0 if same else 1)

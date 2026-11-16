@@ -84,6 +84,7 @@ FORKS_PATH = os.path.join(CACHE_DIR, "forks.json")        # forked sid -> {of, a
 FORKFAM_PATH = os.path.join(CACHE_DIR, "forkfam.json")    # fork family (paths+mtimes) -> its forks
 SESSSIG_PATH = os.path.join(CACHE_DIR, "sessions.sig.json")   # sid -> [source-file signature, date]
 SESS_FMT = 1    # bump when build_sessions changes what a sessions.tsv row holds
+FILESIDS_PATH = os.path.join(CACHE_DIR, "filesids.json")   # path -> [mtime, [sids]] its fragment holds
 
 CACHE_FMT = 7   # bump when the TSV column layout / keying changes, to invalidate old fragments
 
@@ -885,6 +886,44 @@ def _isatty(stream):
 _FRESH = {}     # what build_index just produced, so build_sessions can tell what changed
 
 
+class _Lines:
+    """The index rows, read from the cached fragments only when something asks for them.
+
+    A warm search used to load every fragment (hundreds of thousands of rows) to print about
+    a dozen sessions. Iterating gives every row, as the list this replaces did; for_sids()
+    reads only the fragments that hold those sessions."""
+
+    def __init__(self, files, mem):
+        self.files = files              # [(path, [sids])] in index order; no empty fragments
+        self.mem = mem                  # path -> rows of the fragments parsed this run
+        self.sid_paths = {}
+        for path, sids in files:
+            for sid in sids:
+                self.sid_paths.setdefault(sid, []).append(path)
+
+    def _rows(self, path):
+        rows = self.mem.get(path)
+        if rows is None:
+            with open(_frag_path(path), errors="replace") as fh:
+                rows = fh.read().splitlines()
+        return rows
+
+    def __iter__(self):
+        for path, _sids in self.files:
+            yield from self._rows(path)
+
+    def __bool__(self):
+        return bool(self.files)
+
+    def for_sids(self, sids):
+        want = {p for sid in sids for p in self.sid_paths.get(sid, ())}
+        out = []
+        for path, _sids in self.files:
+            if path in want:
+                out.extend(l for l in self._rows(path) if l.split(SEP, 1)[0] in sids)
+        return out
+
+
 def build_index(include_thinking=False, force=False):
     """Return the full index as a list of TSV strings, refreshing per-file caches."""
     os.makedirs(FRAG_DIR, exist_ok=True)
@@ -929,9 +968,13 @@ def build_index(include_thinking=False, force=False):
             stale += 1
     progress = _IndexProgress(stale)
 
+    try:                                # which sessions each unchanged fragment holds
+        old_files = json.load(open(FILESIDS_PATH))
+    except (OSError, json.JSONDecodeError):
+        old_files = {}
     new_meta = {"_thinking": include_thinking, "_fmt": CACHE_FMT}
     live_frags = set()
-    lines = []
+    new_files, kept, mem = {}, [], {}
     sub_map = {}                        # parent sid -> [subagent file paths] (Claude only)
     sess_sig = {}                       # sid -> files (path:mtime) its rows came from
     sig_tag = f"{SESS_FMT}:{int(include_thinking)}:"
@@ -942,29 +985,38 @@ def build_index(include_thinking=False, force=False):
         mtime = mtimes[path]
         frag = _frag_path(path)
         live_frags.add(os.path.basename(frag))
+        sids = None
         if not force and meta.get(path) == mtime and os.path.exists(frag):
-            with open(frag, errors="replace") as fh:
-                frag_lines = fh.read().splitlines()
+            known = old_files.get(path)
+            if known and known[0] == mtime:
+                sids = known[1]
+            else:
+                with open(frag, errors="replace") as fh:
+                    frag_lines = fh.read().splitlines()
         else:
             _sid, rows = parser(path, include_thinking)
             frag_lines = [SEP.join(r) for r in rows]
             with open(frag, "w") as fh:
                 fh.write("\n".join(frag_lines))
+            mem[path] = frag_lines
             progress.tick()
+        if sids is None:
+            sids = list(dict.fromkeys(l.split(SEP, 1)[0] for l in frag_lines))
         new_meta[path] = mtime
-        lines.extend(frag_lines)
-        if not frag_lines:
+        new_files[path] = [mtime, sids]
+        if not sids:
             continue
+        kept.append((path, sids))
         base = os.path.basename(path)
         if _source(source)["subagents"] and base.startswith("agent-"):
-            sid0 = frag_lines[0].split(SEP, 1)[0]
+            sid0 = sids[0]
             sub_map.setdefault(sid0, []).append(path)     # subagent folds into parent
             sess_sig.setdefault(sid0, []).append(f"{path}:{mtime}")
             continue
         # Most harnesses write one file per session, but some keep every session in a single
         # database. Register whatever sessions the fragment actually contains rather than
         # assuming the first row speaks for the file.
-        for sid0 in dict.fromkeys(l.split(SEP, 1)[0] for l in frag_lines):
+        for sid0 in sids:
             index[sid0] = {"source": source, "path": path}
             sess_sig.setdefault(sid0, []).append(f"{path}:{mtime}")
             if source == "cc":
@@ -976,9 +1028,11 @@ def build_index(include_thinking=False, force=False):
     progress.done_()
 
     json.dump(new_meta, open(META_PATH, "w"))
+    json.dump(new_files, open(FILESIDS_PATH, "w"))
     json.dump(sub_map, open(SUBMAP_PATH, "w"))
     json.dump(index, open(INDEX_PATH, "w"))
     json.dump(detect_forks(index, FORKFAM_PATH, force), open(FORKS_PATH, "w"))
+    lines = _Lines(kept, mem)
     _FRESH.update(lines=lines, force=force, sigs={
         sid: sig_tag + "|".join(sorted(parts)) for sid, parts in sess_sig.items()})
     return lines
@@ -1137,7 +1191,9 @@ def print_matches(lines, query, limit=20):
 
     keys = query_keys(qterms)
     texts = {}
-    for l in lines:                    # sid -> its messages, for the "why it matched" line
+    shown = {f[C_SID] for _m, f in hits[:limit]}
+    # sid -> its messages, for the "why it matched" line; only the printed sessions need them
+    for l in (lines.for_sids(shown) if hasattr(lines, "for_sids") else lines):
         f = l.split(SEP)
         texts.setdefault(f[0], []).append(f[7])
     pad = _isatty(sys.stdout)
@@ -1841,11 +1897,17 @@ def build_sessions(lines):
     sigs = fresh["sigs"] if fresh else {}
     clean = {sid for sid, sig in sigs.items()
              if old_sigs.get(sid, [None])[0] == sig and sid in old_rows}
-    todo = [l for l in lines if l.split(SEP, 1)[0] not in clean] if clean else lines
+    dirty = set(sigs) - clean
+    if fresh and hasattr(lines, "for_sids"):
+        todo = lines.for_sids(dirty)                    # reads only the changed sessions' fragments
+    else:
+        todo = [l for l in lines if l.split(SEP, 1)[0] not in clean] if clean else lines
     done = [(s["date"], _session_row(s, index)) for s in group_sessions(todo)]
-    done += [(old_sigs[sid][1], old_rows[sid]) for sid in clean]
+    done += [(old_sigs[sid][1], old_rows[sid]) for sid in sorted(clean)]
     done.sort(key=lambda d: d[0], reverse=True)
     out = [r for _d, r in done]
+    if fresh and clean and not dirty and len(old_rows) == len(clean):
+        return out                  # nothing changed: sessions.tsv and its signatures stand
     with open(SESSSIG_PATH, "w") as fh:     # empty while sessions.tsv is rewritten or scoped,
         fh.write("{}")                      # so a killed or filtered run is never reused
     with open(SESSIONS_PATH, "w") as fh:                 # what _filter reads, one line each

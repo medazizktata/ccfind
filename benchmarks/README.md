@@ -34,21 +34,30 @@ the numbers are for reading, not gating.
 The live session is left out of the output (`CCFIND_EXCLUDE`), otherwise its own growing
 transcript would change what is printed between two runs.
 
-## Result (2026-11-16, 2,076 transcript files, 446 sessions, macOS 26.5.1, Python 3.14.8)
+## Results (2,076 transcript files, 446 sessions, macOS 26.5.1, Python 3.14.8, 2026-11-16)
 
-| arm | median s |
-|---|---|
-| cold | 68.6 (one run) |
-| warm, caches on | 4.22 (min 4.20, max 4.26, 5 runs) |
-| warm, caches blanked | 12.08 (min 12.06, max 12.20, 5 runs) |
+Median seconds of a warm `-n` search, same corpus and query, 5 runs each:
 
-Both checks passed. Raw output: `results/2026-11-16.md`. One machine, one corpus, one query;
-the absolute numbers will differ on yours, the ratio is what to compare.
+| build | warm, caches on | warm, caches blanked | cold |
+|---|---|---|---|
+| fork and session caches (`c64ccf0`) | 4.22 | 12.08 | 68.6 |
+| plus lazy rows (the build in `results/2026-11-16-lazy-rows.md`) | 1.79 | 12.41 | 68.5 |
 
-Where the remaining warm time goes (cProfile, single run, approximate): `build_index` 1.6 s
-(reading 2,079 fragment files and splitting 458k rows), `build_sessions` 1.8 s (reading and
-rewriting the 157 MB `sessions.tsv`), `print_matches` about 1.5 s (another pass over all rows,
-then ranking). No JSON parsing is left on the warm path.
+"Caches blanked" empties the fork and session caches only, so a search rebuilds both from the
+cached fragments. Before `c64ccf0` a warm search always paid that (about 12 s). The cold
+column is one run. Both checks passed on both builds. Raw output: `results/`.
+
+One machine, one corpus, one query: the absolute numbers will differ on yours, compare the
+ratios.
+
+What the lazy-rows step changed: `build_index` used to read every fragment (about 458k rows)
+into a list on every run, so a search could print a dozen sessions. It now returns a lazy
+object that knows which sessions each fragment holds (`filesids.json`, valid while the
+source file's mtime is unchanged) and reads only the fragments of changed sessions and of
+the sessions it prints. Anything that needs every row (a scoped search with `-a`, `-p` or
+`--here`) still iterates all of them, as before. Not re-profiled after this change, so
+where the remaining 1.8 s goes is not measured; the likely cost is reading and splitting
+the 157 MB `sessions.tsv`.
 
 ## Calibration: the checks can fail
 

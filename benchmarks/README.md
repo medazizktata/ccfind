@@ -59,6 +59,22 @@ the sessions it prints. Anything that needs every row (a scoped search with `-a`
 where the remaining 1.8 s goes is not measured; the likely cost is reading and splitting
 the 157 MB `sessions.tsv`.
 
+### Other queries and scoped searches (single runs, 2026-11-16, lazy-rows build)
+
+Warm, unscoped: `invoice` 2.14 s, `sandbox` 1.90, `fork` 2.03, `agent fence` 2.69,
+`p2p quote` 2.18, no query 1.47, and 3.37 for a nonsense word (it falls through to the
+typo tier, which ranks slowest). So "about 2 s" is typical and the range is 1.5 to 3.4 s.
+
+Scoped searches iterate every row to apply the filter, and do not reuse the session cache:
+`-a second` 5.30 s (the account holds about half the sessions, so they are all
+regrouped), `-p Second` 1.93 s and `--here` 1.69 s (few sessions survive the filter).
+The first unscoped search after any scoped one rebuilds the session rows once: 7.51 s, then
+1.75 s again.
+
+Where a warm search spends its time (cProfile, one run, 1.96 s profiled): reading the
+157 MB `sessions.tsv` about 1.0 s (every row carries its session's whole lowercased text),
+`build_index` 0.4 s (mostly walking the directories), ranking 0.2 s.
+
 ## Calibration: the checks can fail
 
 Each was run and had to fail (2026-11-16):

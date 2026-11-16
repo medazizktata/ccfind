@@ -65,6 +65,8 @@ plus our commits (`git log --oneline v0.2.0..ccfind`); remote `upstream` is the 
 - `ask/`: `ccfind ask` (ccask, ccask-guard, ccask-system.md). Run logs `ask/.ccask-last-*`
   are git-ignored.
 - `harness/test.sh`: end-to-end checks. `tests/`: upstream's pytest suite.
+- `benchmarks/`: warm and cold search timings plus a row-level cache check, on real transcripts.
+  `benchmarks/README.md` has the method, results and calibration.
 - `docs/UPSTREAM-README.md`: upstream's README, unchanged.
 - `.archive/`: the pre-fork layout (the patch script, the built copy). Git-ignored, kept
   because nothing here is deleted.

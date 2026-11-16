@@ -81,6 +81,9 @@ SESSIONS_PATH = os.path.join(CACHE_DIR, "sessions.tsv")   # one line per session
 SUBMAP_PATH = os.path.join(CACHE_DIR, "submap.json")      # parent-sid -> [subagent file paths]
 INDEX_PATH = os.path.join(CACHE_DIR, "index.json")        # sid -> {source, path} for preview/resume
 FORKS_PATH = os.path.join(CACHE_DIR, "forks.json")        # forked sid -> {of, at}
+FORKFAM_PATH = os.path.join(CACHE_DIR, "forkfam.json")    # fork family (paths+mtimes) -> its forks
+SESSSIG_PATH = os.path.join(CACHE_DIR, "sessions.sig.json")   # sid -> [source-file signature, date]
+SESS_FMT = 1    # bump when build_sessions changes what a sessions.tsv row holds
 
 CACHE_FMT = 7   # bump when the TSV column layout / keying changes, to invalidate old fragments
 
@@ -738,7 +741,31 @@ def _older(a, b):
     return a[k][1] <= b[k][1]
 
 
-def detect_forks(index):
+def _family_forks(index, sids):
+    seq = {s: _msg_uuids(index[s]["path"]) for s in sids}
+    ranked = []                               # oldest branch first, by insertion
+    for s in sorted(sids):
+        i = 0
+        while i < len(ranked) and _older(seq[ranked[i]], seq[s]):
+            i += 1
+        ranked.insert(i, s)
+    forks = {}
+    for i, sid in enumerate(ranked[1:], 1):
+        of = max(ranked[:i], key=lambda p: _shared_prefix(seq[p], seq[sid]))
+        at = _shared_prefix(seq[of], seq[sid])
+        if at:
+            forks[sid] = {"of": of, "at": at}
+    return forks
+
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0
+
+
+def detect_forks(index, cache_path=None, force=False):
     """{forked sid: {"of": original sid, "at": messages shared}} across the whole index.
 
     Which branch is the original is decided at the message where two branches stop agreeing,
@@ -746,29 +773,30 @@ def detect_forks(index):
     with, so a fork of a fork points at the fork and not at the root.
 
     Only the handful of sessions that share a fingerprint are read here; everything else costs
-    a dict lookup.
+    a dict lookup. With cache_path, a family is re-read only when one of its files changed
+    (the key is path + mtime of every member); bump CACHE_FMT if the detection rule changes.
     """
     family = {}
     for sid, info in index.items():
         if info.get("source") == "cc" and info.get("root"):
             family.setdefault(info["root"], []).append(sid)
 
-    forks = {}
+    old = {}
+    if cache_path and not force:
+        try:
+            old = json.load(open(cache_path))
+        except (OSError, json.JSONDecodeError):
+            pass
+    fresh, forks = {}, {}
     for sids in family.values():
         if not 2 <= len(sids) <= FORK_FAMILY_MAX:
             continue
-        seq = {s: _msg_uuids(index[s]["path"]) for s in sids}
-        ranked = []                               # oldest branch first, by insertion
-        for s in sorted(sids):
-            i = 0
-            while i < len(ranked) and _older(seq[ranked[i]], seq[s]):
-                i += 1
-            ranked.insert(i, s)
-        for i, sid in enumerate(ranked[1:], 1):
-            of = max(ranked[:i], key=lambda p: _shared_prefix(seq[p], seq[sid]))
-            at = _shared_prefix(seq[of], seq[sid])
-            if at:
-                forks[sid] = {"of": of, "at": at}
+        key = f"{CACHE_FMT}|" + "|".join(
+            f"{index[s]['path']}:{_mtime(index[s]['path'])}" for s in sorted(sids))
+        fresh[key] = old[key] if key in old else _family_forks(index, sids)
+        forks.update(fresh[key])
+    if cache_path:
+        json.dump(fresh, open(cache_path, "w"))
     return forks
 
 
@@ -854,6 +882,9 @@ def _isatty(stream):
         return False
 
 
+_FRESH = {}     # what build_index just produced, so build_sessions can tell what changed
+
+
 def build_index(include_thinking=False, force=False):
     """Return the full index as a list of TSV strings, refreshing per-file caches."""
     os.makedirs(FRAG_DIR, exist_ok=True)
@@ -902,6 +933,8 @@ def build_index(include_thinking=False, force=False):
     live_frags = set()
     lines = []
     sub_map = {}                        # parent sid -> [subagent file paths] (Claude only)
+    sess_sig = {}                       # sid -> files (path:mtime) its rows came from
+    sig_tag = f"{SESS_FMT}:{int(include_thinking)}:"
     index = {}                          # sid -> {source, path} for preview + resume routing
     for path, source, parser in files:
         if path not in mtimes:              # vanished between the stat pass and now
@@ -926,12 +959,14 @@ def build_index(include_thinking=False, force=False):
         if _source(source)["subagents"] and base.startswith("agent-"):
             sid0 = frag_lines[0].split(SEP, 1)[0]
             sub_map.setdefault(sid0, []).append(path)     # subagent folds into parent
+            sess_sig.setdefault(sid0, []).append(f"{path}:{mtime}")
             continue
         # Most harnesses write one file per session, but some keep every session in a single
         # database. Register whatever sessions the fragment actually contains rather than
         # assuming the first row speaks for the file.
         for sid0 in dict.fromkeys(l.split(SEP, 1)[0] for l in frag_lines):
             index[sid0] = {"source": source, "path": path}
+            sess_sig.setdefault(sid0, []).append(f"{path}:{mtime}")
             if source == "cc":
                 root = (old_index.get(sid0) or {}).get("root")
                 index[sid0]["root"] = root or _root_uuid(path)
@@ -943,7 +978,9 @@ def build_index(include_thinking=False, force=False):
     json.dump(new_meta, open(META_PATH, "w"))
     json.dump(sub_map, open(SUBMAP_PATH, "w"))
     json.dump(index, open(INDEX_PATH, "w"))
-    json.dump(detect_forks(index), open(FORKS_PATH, "w"))
+    json.dump(detect_forks(index, FORKFAM_PATH, force), open(FORKS_PATH, "w"))
+    _FRESH.update(lines=lines, force=force, sigs={
+        sid: sig_tag + "|".join(sorted(parts)) for sid, parts in sess_sig.items()})
     return lines
 
 
@@ -1762,26 +1799,60 @@ def group_sessions(lines):
     return sessions
 
 
+def _session_row(s, index):
+    source = index.get(s["sid"], {}).get("source", "cc")
+    title = _single_line(s["title"] or "(untitled)", 90)
+    first = _single_line(s["first_user"], 400)
+    # High cap so full sessions (incl. folded-in subagent content) stay searchable.
+    # Stored lowercased: ranking is the only reader, and it would otherwise re-lower the
+    # whole corpus on every keystroke. Nothing displays this column.
+    blob = _single_line(" · ".join(s["texts"]), 2_000_000).lower()
+    return [s["sid"], s["cwd"], s["date"][:10], source, s["kind"], title, first, blob]
+
+
+def _load_session_cache():
+    """({sid: [signature, full date]}, {sid: row}) from the last unscoped build, or empty."""
+    try:
+        sigs = json.load(open(SESSSIG_PATH))
+        rows = {}
+        for l in open(SESSIONS_PATH, errors="replace").read().splitlines():
+            f = l.split(SEP)
+            if len(f) == SESSION_COLS:
+                rows[f[C_SID]] = f
+        return sigs, rows
+    except (OSError, json.JSONDecodeError):
+        return {}, {}
+
+
 def build_sessions(lines):
     """Write one line per session to SESSIONS_PATH: sid, cwd, date, source, kind, title, first
     prompt, blob. The first prompt is stored separately from the blob so ranking can weight it
-    as its own field — it's the strongest single signal of what a session is about."""
+    as its own field — it's the strongest single signal of what a session is about.
+
+    When `lines` is exactly what build_index returned (no scope filter), a session whose source
+    files are unchanged keeps its row from the last build; only changed sessions are regrouped.
+    Equal-date sessions may come out in a different order than from a full rebuild."""
     try:
         index = json.load(open(INDEX_PATH))
     except (OSError, json.JSONDecodeError):
         index = {}
-    out = []
-    for s in group_sessions(lines):
-        source = index.get(s["sid"], {}).get("source", "cc")
-        title = _single_line(s["title"] or "(untitled)", 90)
-        first = _single_line(s["first_user"], 400)
-        # High cap so full sessions (incl. folded-in subagent content) stay searchable.
-        # Stored lowercased: ranking is the only reader, and it would otherwise re-lower the
-        # whole corpus on every keystroke. Nothing displays this column.
-        blob = _single_line(" · ".join(s["texts"]), 2_000_000).lower()
-        out.append([s["sid"], s["cwd"], s["date"][:10], source, s["kind"], title, first, blob])
+    fresh = _FRESH if _FRESH.get("lines") is lines else None
+    old_sigs, old_rows = _load_session_cache() if fresh and not fresh["force"] else ({}, {})
+    sigs = fresh["sigs"] if fresh else {}
+    clean = {sid for sid, sig in sigs.items()
+             if old_sigs.get(sid, [None])[0] == sig and sid in old_rows}
+    todo = [l for l in lines if l.split(SEP, 1)[0] not in clean] if clean else lines
+    done = [(s["date"], _session_row(s, index)) for s in group_sessions(todo)]
+    done += [(old_sigs[sid][1], old_rows[sid]) for sid in clean]
+    done.sort(key=lambda d: d[0], reverse=True)
+    out = [r for _d, r in done]
+    with open(SESSSIG_PATH, "w") as fh:     # empty while sessions.tsv is rewritten or scoped,
+        fh.write("{}")                      # so a killed or filtered run is never reused
     with open(SESSIONS_PATH, "w") as fh:                 # what _filter reads, one line each
         fh.write("\n".join(SEP.join(r) for r in out))
+    if fresh:
+        json.dump({r[C_SID]: [sigs[r[C_SID]], d] for d, r in done if r[C_SID] in sigs},
+                  open(SESSSIG_PATH, "w"))
     return out
 
 

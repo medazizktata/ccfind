@@ -106,6 +106,40 @@ class DetectForkTests(unittest.TestCase):
         self.assertEqual(self._detect(same), {})
 
 
+class ForkCacheTests(unittest.TestCase):
+    """A family is re-read only when one of its files changed."""
+
+    def setUp(self):
+        self.reads = []
+        real = ag._msg_uuids
+        self.addCleanup(setattr, ag, "_msg_uuids", real)
+        ag._msg_uuids = lambda p: (self.reads.append(p), real(p))[1]
+
+    def _family(self, d):
+        return index_of(d, {"trunk": turns(["a", "b", "c"]) + turns(["t1"], start=3),
+                            "later": turns(["a", "b", "c"]) + turns(["f1"], start=9)})
+
+    def test_an_unchanged_family_is_not_read_again_and_gives_the_same_answer(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as c:
+            index, cache = self._family(d), os.path.join(c, "forkfam.json")
+            first = ag.detect_forks(index, cache)
+            self.assertEqual(len(self.reads), 2)
+            self.assertEqual(ag.detect_forks(index, cache), first)
+            self.assertEqual(len(self.reads), 2)
+            self.assertEqual(first, {"later": {"of": "trunk", "at": 3}})
+
+    def test_a_touched_file_or_force_reads_the_family_again(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as c:
+            index, cache = self._family(d), os.path.join(c, "forkfam.json")
+            ag.detect_forks(index, cache)
+            p = index["later"]["path"]
+            os.utime(p, (os.path.getmtime(p) + 5,) * 2)
+            ag.detect_forks(index, cache)
+            self.assertEqual(len(self.reads), 4)
+            ag.detect_forks(index, cache, force=True)
+            self.assertEqual(len(self.reads), 6)
+
+
 class ForkDisplayTests(unittest.TestCase):
     def _row(self, forked):
         return strip(ag._row("sid", "/repo/app", "2026-08-19", "cc", "cli", "Some title",

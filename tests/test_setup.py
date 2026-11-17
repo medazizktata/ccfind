@@ -22,7 +22,12 @@ class SetupTests(unittest.TestCase):
         ag.PROJECTS_DIR = os.path.join(self.home, ".claude", "projects")
         for name in ("alpha", "beta"):
             os.makedirs(os.path.join(self.home, ".claude-" + name, "projects"))
-        ag.ACCOUNT_DIRS, ag.ASK_ACCOUNT = {}, None
+        ag._ACCOUNTS, ag.ACCOUNT_DIRS, ag.ACCOUNT_SOURCE, ag.ASK_ACCOUNT = {}, {}, {}, None
+        env = mock.patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        for var in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):    # the developer's own must not leak in
+            os.environ.pop(var, None)
 
     def run_setup(self, argv=(), answers=()):
         out = io.StringIO()
@@ -85,7 +90,8 @@ class SetupTests(unittest.TestCase):
         os.makedirs(os.path.dirname(self.ag.CONFIG_PATH))
         with open(self.ag.CONFIG_PATH, "w") as fh:
             json.dump({"accounts": {"beta": "~/.claude-beta"}, "ask": "beta"}, fh)
-        self.ag.ACCOUNT_DIRS = {"beta": os.path.join(self.home, ".claude-beta")}
+        beta = os.path.join(self.home, ".claude-beta")
+        self.ag._ACCOUNTS, self.ag.ACCOUNT_DIRS = {"beta": ("cc", beta)}, {"beta": beta}
         self.ag.ASK_ACCOUNT = "beta"
         rc, _out, _n = self.run_setup(answers=["", "", ""])         # Enter keeps what was saved
         self.assertEqual(rc, 0)
@@ -94,10 +100,20 @@ class SetupTests(unittest.TestCase):
     def test_an_account_saved_by_hand_outside_the_usual_place_is_kept_as_a_choice(self):
         odd = os.path.join(self.home, "elsewhere", "cfg")
         os.makedirs(os.path.join(odd, "projects"))
-        self.ag.ACCOUNT_DIRS = {"odd": odd}
+        self.ag._ACCOUNTS, self.ag.ACCOUNT_DIRS = {"odd": ("cc", odd)}, {"odd": odd}
         rc, _out, _n = self.run_setup(["--accounts", "odd", "--ask", "none", "--yes"])
         self.assertEqual(rc, 0)
         self.assertEqual(self.saved()["accounts"], {"odd": "~/elsewhere/cfg"})
+
+    def test_accounts_of_another_service_are_listed_searched_and_saved_but_never_billed(self):
+        os.makedirs(os.path.join(self.home, ".codex-work", "sessions"))
+        rc, out, _n = self.run_setup(["--accounts", "all", "--ask", "none", "--yes"])
+        self.assertEqual(rc, 0)
+        self.assertIn("codex-work", out)
+        self.assertEqual(self.saved()["accounts"]["codex-work"],
+                         {"source": "codex", "dir": "~/.codex-work"})
+        rc, _out, _n = self.run_setup(["--accounts", "all", "--ask", "codex-work", "--yes"])
+        self.assertEqual(rc, 2)                                     # ask runs the claude CLI
 
     def test_claude_as_the_billed_account_is_reported_to_ccask(self):
         self.ag.ASK_ACCOUNT = "claude"

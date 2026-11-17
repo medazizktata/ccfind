@@ -15,11 +15,12 @@ FENCE="${AGENT_FENCE:-agent-fence}"     # macOS sandbox wrapper: github.com/meda
 NAMES=(); ROOTS=(); ASK_DIR=""; ALL_NAMES=(); ALL_DIRS=()
 CCFIND_PY=$(readlink -f "$(command -v ccfind)" 2>/dev/null) || CCFIND_PY=""
 if [ -n "$CCFIND_PY" ]; then
-  while IFS=$'\t' read -r n d; do
+  while IFS=$'\t' read -r n d src; do
     case "$n" in
       ask) ASK_DIR=$d ;;
-      claude) ROOTS+=("$d/projects"); ALL_NAMES+=("$n"); ALL_DIRS+=("$d") ;;
-      *) NAMES+=("$n"); ROOTS+=("$d/projects"); ALL_NAMES+=("$n"); ALL_DIRS+=("$d") ;;
+      *) [ "$src" = cc ] || continue          # the agent reads Claude transcripts only
+         [ "$n" = claude ] || NAMES+=("$n")
+         ROOTS+=("$d/projects"); ALL_NAMES+=("$n"); ALL_DIRS+=("$d") ;;
     esac
   done < <(python3 -I "$CCFIND_PY" _accounts 2>/dev/null)
 fi

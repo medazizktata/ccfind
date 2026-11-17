@@ -48,7 +48,7 @@ if [ $CALIBRATE = 1 ]; then
   C=$(mktemp -d "${TMPDIR%/}/ccfind-calibrate.XXXXXX")
   echo "calibration builds in $C"
   printf '#!/bin/sh\nexit 0\n' > "$C/noop-ccfind"; chmod +x "$C/noop-ccfind"
-  sed 's/^        argv\[:1\] = _account_launch(info.get("path", "")) or argv\[:1\]$/        pass  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-no-routing"
+  sed 's/^    argv\[:1\] = _account_launch(info.get("path", "")) or argv\[:1\] .*$/    pass  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-no-routing"
   sed 's/^        lines = \[l for l in lines if l.split(SEP, 1)\[0\] in keep\]$/        pass  # sabotaged/' \
     "$CCFIND_BIN" > "$C/ccfind-no-account"
   sed 's/^    return any(os.environ.get(v) for v in AGENT_VARS)$/    return False  # sabotaged/' \
@@ -63,9 +63,11 @@ if [ $CALIBRATE = 1 ]; then
   sed 's/^    expired = _keep_expired(.*$/    expired = []  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-forgets-expired"
   sed 's/^            if entry.get("expired"):$/            if False:  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-no-expired-sig"
   sed 's|^  CONFIG_DIR="$HOME/.claude-$ACCOUNT"$|  CONFIG_DIR="$HOME/.claude"  # sabotaged|' "$INSTALL_SH" > "$C/install-wrong-dir.sh"
-  sed 's/json.dump({"accounts": {n: home_rel(found\[n\]) for n in keep}, "ask": ask}, fh, indent=2)/fh.write("{}")  # sabotaged/' \
+  sed 's/_accounts_json({n: found\[n\] for n in keep})/_accounts_json({n: found[n] for n in keep if n == "sabotaged"})/' \
     "$CCFIND_BIN" > "$C/ccfind-setup-no-save"
-  chmod +x "$C/ccfind-setup-no-save"
+  sed 's/^            return _account_launchers(key)\[:1\] or \["env", f"{h\[.env.\]}={ACCOUNT_DIRS\[key\]}", h\["cmd"\]\]$/            return None  # sabotaged/' \
+    "$CCFIND_BIN" > "$C/ccfind-no-account-home"
+  chmod +x "$C/ccfind-setup-no-save" "$C/ccfind-no-account-home"
   chmod +x "$C/ccfind-no-delta-reader" "$C/ccfind-no-delta-writer" "$C/ccfind-forgets-expired" \
            "$C/ccfind-no-expired-sig"
   for d in ask ask-openguard ask-opensb; do
@@ -91,6 +93,7 @@ if [ $CALIBRATE = 1 ]; then
               "ccfind that forgets a session when its transcript is gone|CCFIND_BIN=$C/ccfind-forgets-expired" \
               "ccfind that gives expired sessions no signature|CCFIND_BIN=$C/ccfind-no-expired-sig" \
               "ccfind setup that never saves|CCFIND_BIN=$C/ccfind-setup-no-save" \
+              "ccfind that resumes another account's session with the default home|CCFIND_BIN=$C/ccfind-no-account-home" \
               "install.sh that puts an account's skill in the user dir|INSTALL_SH=$C/install-wrong-dir.sh" \
               "ccask that accepts invented ids|CCASK_BIN=$C/ask/ccask" \
               "guard that allows every tool call|CCASK_BIN=$C/ask-openguard/ccask" \
@@ -149,6 +152,7 @@ fi
 # ---------------------------------------------------------------- fixtures
 T=$(mktemp -d "${TMPDIR%/}/ccfind-test.XXXXXX")
 export HOME="$T" XDG_CACHE_HOME="$T/.cache" STUB_LOG="$T/stub"
+unset CLAUDE_CONFIG_DIR CODEX_HOME XDG_CONFIG_HOME   # the caller's own accounts must not leak in
 mkdir -p "$T/bin"
 ln -s "$CCFIND_BIN" "$T/bin/ccfind"
 cat > "$T/bin/claude" <<'STUB'
@@ -201,6 +205,16 @@ mk second $C "$T/work/gamma" "$T/work/gamma"    "Gamma marmoset"   "marmoset gam
 printf '#!/bin/sh\nexec claude "$@"\n' > "$T/.claude-second/mcp-launch.sh"; chmod +x "$T/.claude-second/mcp-launch.sh"
 F=ffffffff-0000-4000-8000-000000000006   # a third account with no launcher of its own
 mk third $F "$T/work/zeta" "$T/work/zeta" "Zeta ocelot" "ocelot zeta" >/dev/null
+# Codex: the default account and a second one (~/.codex-work), one session each
+mkcodex() {   # mkcodex <home dir name> <session-id> <cwd> <text>
+  local d="$T/$1/sessions/2026/11/17"; mkdir -p "$d" "$3"
+  printf '{"type":"session_meta","payload":{"id":"%s","cwd":"%s","timestamp":"2026-11-17T10:00:00Z"}}\n{"type":"response_item","timestamp":"2026-11-17T10:00:01Z","payload":{"type":"message","role":"user","content":[{"text":"%s"}]}}\n' \
+    "$2" "$3" "$4" > "$d/rollout-2026-11-17T10-00-00-$2.jsonl"
+}
+G=11111111-0000-4000-8000-000000000007
+H=22222222-0000-4000-8000-000000000008
+mkcodex .codex      $G "$T/work/eta"   "axolotl eta default codex"
+mkcodex .codex-work $H "$T/work/theta" "narwhal theta work codex"
 E=eeeeeeee-0000-4000-8000-000000000005   # a cursor-agent session: no title or timestamp fields
 mkdir -p "$T/.cursor/projects/work-epsilon/agent-transcripts/$E"
 printf '{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\\narmadillo epsilon setup\\n</user_query>"}]}}\n' \
@@ -221,7 +235,18 @@ check "an account without a launcher resumes through CLAUDE_CONFIG_DIR" \
 run ccfind -n -a third zeta
 check "-a <name> works for an account found on its own, and only that one" 0 "+$F" "-$A" "-$B"
 OUT="$(cat "$T/.config/ccfind/accounts.json" 2>&1)"; RC=0
-check "the accounts it found were saved for next time" 0 "+second" "+third" "-claude\""
+check "the accounts it found were saved for next time" 0 "+second" "+third" "-claude\"" "+codex-work"
+run ccfind -n axolotl
+check "a Codex session of the default account resumes with plain codex" 0 "+codex resume $G" "-CODEX_HOME"
+run ccfind -n narwhal
+check "a Codex session of a second account resumes with that account's CODEX_HOME" \
+      0 "+env CODEX_HOME=$T/.codex-work codex resume $H"
+run ccfind -n -a codex-work invoice axolotl narwhal
+check "-a codex-work keeps only that account's sessions" 0 "+$H" "-$G" "-$A" "-$B"
+run ccfind -n -a codex axolotl narwhal
+check "-a codex keeps only the default Codex account" 0 "+$G" "-$H"
+run ccfind -n -a claude axolotl narwhal invoice
+check "-a claude keeps no Codex session" 0 "+$A" "-$G" "-$H"
 run ccfind -n -a claude invoice
 check "-a claude keeps only ~/.claude"           0 "+$A" "-$B"
 run ccfind -n -a SECOND invoice

@@ -15,8 +15,12 @@ How an agent should use and maintain `ccfind`. Usage for people is in `README.md
    sessions under another account's folder `~/.claude-<name>`.
 
 `ccfind -p <path-substring> "<words>"` limits the search to matching project paths.
-`ccfind -a claude|<name>|all` limits it to one Claude account's transcripts (`<name>` is a
-folder `~/.claude-<name>` that has a `projects/` folder). The default is all. The accounts are
+`ccfind -a claude|codex|<key>|all` limits it to one account's transcripts. Accounts are found per
+service (`ACCOUNT_HOMES`): `~/.claude-<name>` with a `projects/` folder is the Claude account
+`<name>`, `~/.codex-<name>` with a `sessions/` folder is the Codex account `codex-<name>`, and the
+home `CLAUDE_CONFIG_DIR` or `CODEX_HOME` points at counts too. Adding a service with several
+accounts means one entry there; a service nobody can tell accounts apart in (cursor, opencode,
+gemini) needs none. The default is all. The accounts are
 found on the first run and saved in `~/.config/ccfind/accounts.json`. `ccfind setup` is the
 interactive way to change it (`cmd_setup`; `--accounts`, `--ask NAME|claude|none` and `--yes` skip
 the questions; `ccfind setup docker` is still a search, see `_is_setup`). Editing the file also

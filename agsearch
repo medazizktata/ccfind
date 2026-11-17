@@ -69,36 +69,72 @@ HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
 CONFIG_PATH = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")),
                            "ccfind", "accounts.json")
-_RESERVED_ACCOUNTS = ("claude", "default", "all", "global")     # -a words that mean something
+# Services whose sessions live under a per-account home folder. `prefix` is the folder under ~ of
+# the default account (a sibling ~/<prefix>-<name> is another one), `sub` is where its sessions are,
+# `cmd` starts it, `env` is the variable that points the tool at another home, and `key` is put in
+# front of a name so that accounts of different services cannot share one (-a codex-work).
+ACCOUNT_HOMES = {
+    "cc": {"prefix": ".claude", "sub": "projects", "cmd": "claude", "env": "CLAUDE_CONFIG_DIR",
+           "key": "", "default": "claude"},
+    "codex": {"prefix": ".codex", "sub": "sessions", "cmd": "codex", "env": "CODEX_HOME",
+              "key": "codex-", "default": "codex"},
+}
+_RESERVED_ACCOUNTS = ("all", "global", "default") + tuple(h["default"] for h in ACCOUNT_HOMES.values())
+
+
+def _tilde(d):
+    return "~" + d[len(HOME):] if d.startswith(HOME + os.sep) else d
 
 
 def _find_accounts():
-    """Every ~/.claude-<name> that has a projects folder: {name: config dir}."""
+    """Every other account of each service: {key: (source, home dir)}.
+
+    A sibling ~/<prefix>-<name> that has the sessions folder, and the home the tool's own
+    environment variable points at (CLAUDE_CONFIG_DIR, CODEX_HOME) when it is neither the
+    default nor one of those."""
     found = {}
     try:
         names = sorted(os.listdir(HOME))
     except OSError:
-        return found
-    for n in names:
-        name = n[len(".claude-"):].lower()
-        if (n.startswith(".claude-") and name and name not in _RESERVED_ACCOUNTS
-                and os.path.isdir(os.path.join(HOME, n, "projects"))):
-            found[name] = os.path.join(HOME, n)
+        names = []
+    for source, h in ACCOUNT_HOMES.items():
+        default = os.path.join(HOME, h["prefix"])
+        for n in names:
+            name = n[len(h["prefix"]) + 1:].lower()
+            key = h["key"] + name
+            if (n.startswith(h["prefix"] + "-") and name and key not in _RESERVED_ACCOUNTS
+                    and os.path.isdir(os.path.join(HOME, n, h["sub"]))):
+                found[key] = (source, os.path.join(HOME, n))
+        env = os.environ.get(h["env"], "")
+        if (env and os.path.realpath(env) != os.path.realpath(default)
+                and os.path.isdir(os.path.join(env, h["sub"]))
+                and not any(os.path.realpath(d) == os.path.realpath(env) for _s, d in found.values())):
+            base = os.path.basename(env.rstrip(os.sep)).lstrip(".").lower()
+            key = h["key"] + (base[len(h["prefix"]):] if base.startswith(h["prefix"].lstrip(".") + "-")
+                              else base)
+            if key not in _RESERVED_ACCOUNTS and key not in found:
+                found[key] = (source, env)
     return found
 
 
 def _load_accounts():
-    """(accounts, ask): the other Claude config directories ccfind searches as {name: dir}, and
-    the name whose account `ccfind ask` runs under (None: the one the environment selects).
+    """(accounts, ask): the other accounts ccfind searches as {key: (source, home dir)}, and the
+    name whose account `ccfind ask` runs under (None: the one the environment selects).
 
-    Found once among ~/.claude-<name> and saved to CONFIG_PATH. Edit that file to drop an
-    account or to set "ask"; delete it to look again. `-a <name>` limits a search to one."""
+    Found once and saved to CONFIG_PATH. Edit that file to drop an account or to set "ask";
+    delete it to look again. `-a <key>` limits a search to one. A Claude account is saved as its
+    folder, any other as {"source": ..., "dir": ...}."""
     try:
         with open(CONFIG_PATH) as fh:
             cfg = json.load(fh)
-        return ({str(n).lower(): os.path.join(HOME, d[2:]) if str(d).startswith("~/") else d
-                 for n, d in cfg["accounts"].items()
-                 if str(n).lower() not in _RESERVED_ACCOUNTS}, cfg.get("ask"))
+        accounts = {}
+        for n, d in cfg["accounts"].items():
+            source, home = ("cc", d) if isinstance(d, str) else (d.get("source"), d.get("dir"))
+            if (source in ACCOUNT_HOMES and isinstance(home, str)
+                    and str(n).lower() not in _RESERVED_ACCOUNTS):
+                accounts[str(n).lower()] = (source, os.path.join(HOME, home[2:])
+                                            if home.startswith("~/") else home)
+        return accounts, cfg.get("ask")
     except FileNotFoundError:
         missing = True
     except (OSError, ValueError, KeyError, AttributeError):
@@ -108,8 +144,7 @@ def _load_accounts():
         try:
             os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
             with open(CONFIG_PATH, "w") as fh:
-                json.dump({"accounts": {n: "~" + d[len(HOME):] for n, d in accounts.items()},
-                           "ask": None}, fh, indent=2)
+                json.dump({"accounts": _accounts_json(accounts), "ask": None}, fh, indent=2)
             if accounts and sys.stderr.isatty():
                 print("ccfind: found " + ", ".join(accounts) + f" and saved them to {CONFIG_PATH}."
                       " Run `ccfind setup` to choose which to search and which one `ask` bills.",
@@ -119,8 +154,25 @@ def _load_accounts():
     return accounts, None
 
 
-ACCOUNT_DIRS, ASK_ACCOUNT = _load_accounts()    # name -> config dir
-ACCOUNT_PROJECTS = {n: os.path.join(d, "projects") for n, d in ACCOUNT_DIRS.items()}
+def _accounts_json(accounts):
+    return {k: _tilde(d) if s == "cc" else {"source": s, "dir": _tilde(d)}
+            for k, (s, d) in accounts.items()}
+
+
+_ACCOUNTS, ASK_ACCOUNT = _load_accounts()
+ACCOUNT_DIRS = {k: d for k, (_s, d) in _ACCOUNTS.items()}         # key -> home dir
+ACCOUNT_SOURCE = {k: s for k, (s, _d) in _ACCOUNTS.items()}       # key -> "cc", "codex"
+ACCOUNT_PROJECTS = {k: os.path.join(d, ACCOUNT_HOMES[ACCOUNT_SOURCE[k]]["sub"])
+                    for k, d in ACCOUNT_DIRS.items()}             # key -> where its sessions are
+
+
+def account_roots(source):
+    """Where `source`'s sessions are: the default account's folder, then every other account's."""
+    h = ACCOUNT_HOMES[source]
+    return [os.path.join(HOME, h["prefix"], h["sub"])] + [
+        ACCOUNT_PROJECTS[k] for k in ACCOUNT_DIRS if ACCOUNT_SOURCE[k] == source]
+
+
 CODEX_DIR = os.path.join(HOME, ".codex", "sessions")
 GEMINI_DIR = os.path.join(HOME, ".gemini", "tmp")
 CURSOR_DIR = os.path.join(HOME, ".cursor", "projects")
@@ -686,13 +738,13 @@ def _is_opencode_db(path):
 #   launch_dir  resume is scoped to the directory the session was started in
 SOURCES = {
     "cc": {
-        "roots": [PROJECTS_DIR, *ACCOUNT_PROJECTS.values()], "match": _is_jsonl, "parse": None,
+        "roots": account_roots("cc"), "match": _is_jsonl, "parse": None,
         "label": "claude", "colour": "34",
         "resume": ("id", ["claude", "--resume", "{sid}"]),
         "subagents": True, "launch_dir": True,
     },
     "codex": {
-        "roots": [CODEX_DIR], "match": _is_jsonl, "parse": None,
+        "roots": account_roots("codex"), "match": _is_jsonl, "parse": None,
         "label": "codex", "colour": "35",
         "resume": ("id", ["codex", "resume", "{sid}"]),
         "subagents": False, "launch_dir": False,
@@ -1236,7 +1288,7 @@ def run_by_agent():
     return any(os.environ.get(v) for v in AGENT_VARS)
 
 
-ACCOUNTS = {"claude": PROJECTS_DIR, "default": PROJECTS_DIR, **ACCOUNT_PROJECTS,
+ACCOUNTS = {"claude": PROJECTS_DIR, "default": PROJECTS_DIR, "codex": CODEX_DIR, **ACCOUNT_PROJECTS,
             "all": None, "global": None}
 
 
@@ -1436,7 +1488,7 @@ def resolve_sid(sid):
 
 
 def _session_path(sid):
-    for base in (PROJECTS_DIR, *ACCOUNT_PROJECTS.values()):
+    for base in account_roots("cc"):
         for root, _dirs, files in os.walk(base):
             if sid + ".jsonl" in files:
                 return os.path.join(root, sid + ".jsonl")
@@ -1955,8 +2007,7 @@ def resume_plan(sid, cwd):
     kind, template = rec["resume"]
     handle = info.get("path", "") if kind == "path" else sid
     argv = [a.replace("{sid}", sid).replace("{path}", handle) for a in template]
-    if source == "cc":
-        argv[:1] = _account_launch(info.get("path", "")) or argv[:1]
+    argv[:1] = _account_launch(info.get("path", "")) or argv[:1]    # another account's home
     bin_ = argv[0]
 
     # Claude looks for the session in the project of whatever directory it starts in, so resume
@@ -1971,27 +2022,36 @@ def resume_plan(sid, cwd):
     return source, bin_, argv, cwd, target, cwd_exists
 
 
-def _account_launchers(name):
-    """Programs that start Claude under account `name`: its mcp-launch.sh, or a claude-<name>."""
-    cands = (os.path.join(ACCOUNT_DIRS[name], "mcp-launch.sh"), shutil.which("claude-" + name))
+def _launcher_name(key):
+    """What you type to start the tool under account `key`: claude-<name>, codex-<name>."""
+    cmd = ACCOUNT_HOMES[ACCOUNT_SOURCE[key]]["cmd"]
+    return key if key.startswith(cmd + "-") else cmd + "-" + key
+
+
+def _account_launchers(key):
+    """Programs that start account `key`'s tool: a Claude account's mcp-launch.sh, or a command
+    named after it on PATH (claude-<name>, codex-<name>)."""
+    cands = (os.path.join(ACCOUNT_DIRS[key], "mcp-launch.sh") if ACCOUNT_SOURCE[key] == "cc" else "",
+             shutil.which(_launcher_name(key)))
     return [c for c in cands if c and os.access(c, os.X_OK)]
 
 
 def _account_launch(path):
-    """The argv start for Claude under the account whose projects hold `path`; None for ~/.claude."""
-    for name, root in ACCOUNT_PROJECTS.items():
+    """The argv start for the tool under the account whose sessions hold `path`; None for a
+    default account's. Without a launcher of its own: `env CLAUDE_CONFIG_DIR=... claude`."""
+    for key, root in ACCOUNT_PROJECTS.items():
         if path.startswith(root + os.sep):
-            found = _account_launchers(name)
-            return found[:1] or ["env", "CLAUDE_CONFIG_DIR=" + ACCOUNT_DIRS[name], "claude"]
+            h = ACCOUNT_HOMES[ACCOUNT_SOURCE[key]]
+            return _account_launchers(key)[:1] or ["env", f"{h['env']}={ACCOUNT_DIRS[key]}", h["cmd"]]
     return None
 
 
 def resume_command(target, argv):
     """A shell line you can paste. Worktree paths contain spaces often enough to quote."""
     cmd = " ".join(argv)
-    for name in ACCOUNT_DIRS:               # show the launcher by the name you type, claude-<name>
-        for path in _account_launchers(name):
-            cmd = cmd.replace(path, "claude-" + name)
+    for key in ACCOUNT_DIRS:                # show a launcher by the name you type
+        for path in _account_launchers(key):
+            cmd = cmd.replace(path, _launcher_name(key))
     return f"cd {shlex.quote(target)} && {cmd}" if target else cmd
 
 
@@ -2508,7 +2568,8 @@ def _pick(text, names, what):
 
 
 def cmd_setup(argv):
-    """Choose which Claude accounts ccfind searches and which one `ccfind ask` bills, then save.
+    """Choose which accounts (Claude, Codex) ccfind searches and which Claude one `ccfind ask`
+    bills, then save.
 
     Interactive by default. `--accounts a,b|all|none`, `--ask NAME|claude|none` and `--yes`
     answer the questions up front, so a script can run it without a terminal."""
@@ -2528,32 +2589,33 @@ def cmd_setup(argv):
         i += 1
 
     saved = bool(os.path.exists(CONFIG_PATH))
-    home_rel = lambda d: "~" + d[len(HOME):] if d.startswith(HOME + os.sep) else d
-    found = {**_find_accounts(), **ACCOUNT_DIRS}       # what is on disk, and what was saved
-    names = sorted(found)
+    home_rel = _tilde
+    found = {**_find_accounts(), **_ACCOUNTS}          # what is on disk, and what was saved
+    names = sorted(found, key=lambda k: (found[k][0], k))
     print(f"ccfind keeps its accounts in {CONFIG_PATH}")
     if names:
-        print("Claude accounts found besides ~/.claude:")
+        print("Accounts found besides the default ones (~/.claude, ~/.codex):")
         for n, name in enumerate(names, 1):
             mark = "searched" if name in ACCOUNT_DIRS or not saved else "not searched"
-            print(f"  {n}) {name:<14} {home_rel(found[name])}   [{mark}]")
+            print(f"  {n}) {name:<16} {ACCOUNT_HOMES[found[name][0]]['cmd']:<7} "
+                  f"{home_rel(found[name][1])}   [{mark}]")
     else:
-        print("No other Claude accounts found: only ~/.claude is searched.")
+        print("No other accounts found: only the default ones are searched.")
 
     try:
         if names:
             keep_default = ",".join(n for n in names if n in ACCOUNT_DIRS) if saved else "all"
             answer = want["--accounts"] if want["--accounts"] is not None else _ask_line(
-                "Search which besides ~/.claude? numbers like 1,3, names, all or none",
+                "Search which of them? numbers like 1,3, names, all or none",
                 keep_default or "none")
             keep = _pick(answer, names, "accounts")
         else:
             keep = []
-        billable = ["claude"] + keep
-        print("Which account should `ccfind ask` run under, and bill?")
+        billable = ["claude"] + [k for k in keep if found[k][0] == "cc"]    # ask runs the claude CLI
+        print("Which Claude account should `ccfind ask` run under, and bill?")
         print("  0) whichever the environment selects (CLAUDE_CONFIG_DIR, else ~/.claude)")
         for n, name in enumerate(billable, 1):
-            where = "~/.claude" if name == "claude" else home_rel(found[name])
+            where = "~/.claude" if name == "claude" else home_rel(found[name][1])
             print(f"  {n}) {name:<14} {where}")
         cur = billable.index(ASK_ACCOUNT) + 1 if ASK_ACCOUNT in billable else 0
         answer = want["--ask"] if want["--ask"] is not None else _ask_line("Number or name", str(cur))
@@ -2565,14 +2627,15 @@ def cmd_setup(argv):
         print(f"ccfind: {e}", file=sys.stderr)
         return 2
 
-    print(f"Search: ~/.claude{''.join(', ' + n for n in keep)}")
+    print("Search: the default accounts" + "".join(", " + n for n in keep))
     print(f"`ccfind ask` bills: {ask or 'whichever the environment selects'}")
     if not yes and _ask_line(f"Save to {CONFIG_PATH}? y or n", "y").lower() not in ("y", "yes"):
         print("Not saved.")
         return 1
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     with open(CONFIG_PATH, "w") as fh:
-        json.dump({"accounts": {n: home_rel(found[n]) for n in keep}, "ask": ask}, fh, indent=2)
+        json.dump({"accounts": _accounts_json({n: found[n] for n in keep}), "ask": ask},
+                  fh, indent=2)
     print("Saved. The next search uses it.")
     return 0
 
@@ -2686,9 +2749,10 @@ def main(argv):
     if _is_setup(argv):
         return cmd_setup(argv[1:])
     if argv and argv[0] == "_accounts":      # for ccask: the accounts and which one it runs under
-        print("claude\t" + os.path.dirname(PROJECTS_DIR))
+        for src, h in ACCOUNT_HOMES.items():     # name, home dir, service: the default accounts first
+            print(f"{h['default']}\t{os.path.join(HOME, h['prefix'])}\t{src}")
         for n, d in ACCOUNT_DIRS.items():
-            print(f"{n}\t{d}")
+            print(f"{n}\t{d}\t{ACCOUNT_SOURCE[n]}")
         print("ask\t" + (os.path.dirname(PROJECTS_DIR) if ASK_ACCOUNT == "claude"
                            else ACCOUNT_DIRS.get(ASK_ACCOUNT or "", "")))
         return 0
@@ -2750,9 +2814,8 @@ def main(argv):
             i += 1
             account = argv[i].strip().lower() if i < len(argv) else ""
             if account not in ACCOUNTS:
-                print("ccfind: -a needs one of: claude (~/.claude), "
-                      + "".join(f"{n} (~/.claude-{n}), " for n in ACCOUNT_DIRS) + "all",
-                      file=sys.stderr)
+                names = [k for k in ACCOUNTS if k not in ("default", "global")]
+                print("ccfind: -a needs one of: " + ", ".join(names), file=sys.stderr)
                 return 2
         elif a == "--":                  # everything after is query, even if it starts with -
             query_parts.extend(argv[i + 1:])

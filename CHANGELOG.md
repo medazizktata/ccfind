@@ -19,6 +19,13 @@ migration in the same line.
   replies, each cut to 2,000 characters, with no tool output and no automation runs. The
   rows are marked `expired`, Enter and `agsearch read` open them read-only, and ctrl-y copies
   the read command, since there is nothing left to resume.
+- **More than one account per service, not only Claude.** `~/.codex-<name>` folders (with a
+  `sessions/` folder) are Codex accounts, named `codex-<name>` (`-a codex-work`; `-a codex` is
+  `~/.codex`), and a home that `CLAUDE_CONFIG_DIR` or `CODEX_HOME` points at is found even if it
+  is not named that way. A session of another Codex account resumes with `codex-<name>` if that
+  command exists, else `env CODEX_HOME=... codex`. `ccfind setup` lists them all; `ask` still
+  bills a Claude account. The saved file keeps a Claude account as its folder and writes any other
+  as `{"source": "codex", "dir": ...}`, and a file from before still loads.
 - **Other Claude accounts are found, not hard-coded.** Every `~/.claude-<name>` folder with a
   `projects/` folder is searched; the list is found on the first run and saved in
   `~/.config/ccfind/accounts.json` (edit it to drop an account or to set `"ask"`, the account

@@ -28,6 +28,8 @@ migration in the same line.
   second account gets it found on the next search and every other `~/.claude-*` account with a
   `projects/` folder is now searched too; `ccfind ask` runs under the environment's account
   unless `"ask"` is set.
+- **`CCASK_ACCOUNT=<name>`** picks the account `ccfind ask` runs under and bills for one run,
+  over `"ask"` in the saved config.
 - **`install.sh --skill` and `--account NAME`** install the Claude Code skill globally (user
   scope, `~/.claude`) or under one account (`~/.claude-NAME`).
 
@@ -43,6 +45,9 @@ migration in the same line.
 
 ### Fixed
 
+- **A config file that was half-written or hand-broken is no longer replaced.** It was
+  overwritten with a fresh autodetect, which lost `"ask"` and any dropped accounts. It is
+  written only when it does not exist.
 - **`-a <account>` finds an expired session.** An expired session has no transcript path, so
   the account filter never matched it; the path it was saved from is now kept with it.
   Sessions expired by an earlier build have none recorded and still do not match `-a`.

@@ -65,12 +65,14 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(accounts, {"beta": os.path.join(self.home, ".claude-beta")})
         self.assertEqual(ask, "beta")
 
-    def test_a_broken_file_falls_back_to_looking_again(self):
+    def test_a_broken_file_is_searched_around_and_left_alone(self):
         self.account("alpha")
         os.makedirs(os.path.dirname(self.ag.CONFIG_PATH))
         with open(self.ag.CONFIG_PATH, "w") as fh:
             fh.write("{not json")
         self.assertEqual(list(self.ag._load_accounts()[0]), ["alpha"])
+        with open(self.ag.CONFIG_PATH) as fh:       # a half-written or hand-broken file is not
+            self.assertEqual(fh.read(), "{not json")  # replaced: that would lose "ask" and edits
 
     def test_an_unwritable_config_location_does_not_stop_the_search(self):
         self.account("alpha")

@@ -120,9 +120,10 @@ shorter setting would make old sessions unsearchable.
 ## ccask (AI fallback)
 
 `ccask "<words>"` runs `ccfind -n`, then hands the candidates to `claude -p --model haiku`
-with `ccask-system.md` as the system prompt. It runs under the account named by `"ask"` in
-`~/.config/ccfind/accounts.json`, else the one the environment already selects
-(`CLAUDE_CONFIG_DIR`, default `~/.claude`), and bills that account.
+with `ccask-system.md` as the system prompt. It runs under `CCASK_ACCOUNT=<name>` if set, else
+the account named by `"ask"` in `~/.config/ccfind/accounts.json`, else the one the environment
+already selects (`CLAUDE_CONFIG_DIR`, default `~/.claude`), and bills that account. The agent is
+always the `claude` CLI (`claude -p`, with its flags); another tool would need its own command.
 
 Guard rails, enforced outside the model (three layers):
 - `ccask-guard`, a PreToolUse hook passed with `--settings`, runs before every tool call:

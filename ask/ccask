@@ -12,14 +12,14 @@ MAX_TOOLS="${CCASK_MAX_TOOLS:-15}"      # tool calls the agent may make, enforce
 FENCE="${AGENT_FENCE:-agent-fence}"     # macOS sandbox wrapper: github.com/medazizktata/agent-fence
 # The accounts ccfind searches: `ccfind _accounts` prints "<name><TAB><config dir>" per account
 # (claude first) and an "ask" line with the dir ccask runs the agent under, if one is set.
-NAMES=(); ROOTS=(); ASK_DIR=""
+NAMES=(); ROOTS=(); ASK_DIR=""; ALL_NAMES=(); ALL_DIRS=()
 CCFIND_PY=$(readlink -f "$(command -v ccfind)" 2>/dev/null) || CCFIND_PY=""
 if [ -n "$CCFIND_PY" ]; then
   while IFS=$'\t' read -r n d; do
     case "$n" in
       ask) ASK_DIR=$d ;;
-      claude) ROOTS+=("$d/projects") ;;
-      *) NAMES+=("$n"); ROOTS+=("$d/projects") ;;
+      claude) ROOTS+=("$d/projects"); ALL_NAMES+=("$n"); ALL_DIRS+=("$d") ;;
+      *) NAMES+=("$n"); ROOTS+=("$d/projects"); ALL_NAMES+=("$n"); ALL_DIRS+=("$d") ;;
     esac
   done < <(python3 -I "$CCFIND_PY" _accounts 2>/dev/null)
 fi
@@ -89,6 +89,15 @@ run_by_agent() {
 }
 
 main() {
+  # Which account the agent runs under and bills: CCASK_ACCOUNT=<name> for this run, else "ask"
+  # in ~/.config/ccfind/accounts.json, else the account the environment already selects.
+  if [ -n "${CCASK_ACCOUNT:-}" ]; then
+    ASK_DIR="" ; local i
+    for i in ${ALL_NAMES[@]+"${!ALL_NAMES[@]}"}; do
+      [ "${ALL_NAMES[$i]}" = "$CCASK_ACCOUNT" ] && ASK_DIR=${ALL_DIRS[$i]}
+    done
+    [ -n "$ASK_DIR" ] || die "CCASK_ACCOUNT=$CCASK_ACCOUNT is not one of: ${ACCOUNT_WORDS//|/, }" 2
+  fi
   local account="" words=() agent=0 copy=""
   while [ $# -gt 0 ]; do
     case "$1" in

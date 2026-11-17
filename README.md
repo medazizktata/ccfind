@@ -26,7 +26,8 @@ unless you know where the session was started.
 ccfind searches `~/.claude` and every other `~/.claude-<name>` folder that has a `projects/`
 folder, one per Claude account. It finds them on the first run and saves the list in
 `~/.config/ccfind/accounts.json`: edit that file to drop one, or to set `"ask"`, the account
-`ccfind ask` runs under and bills; delete it to look again. `ccfind -a <name>` limits a search to
+`ccfind ask` runs under and bills (`CCASK_ACCOUNT=<name>` overrides it for one run); delete it to
+look again. `ccfind -a <name>` limits a search to
 one account, and `-a claude` means `~/.claude`. A session from account `<name>` resumes with
 `claude-<name>`.
 

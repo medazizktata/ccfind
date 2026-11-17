@@ -150,7 +150,7 @@ ln -s "$CCFIND_BIN" "$T/bin/ccfind"
 cat > "$T/bin/claude" <<'STUB'
 #!/bin/bash
 # stub claude: records how it was called, answers per $STUB_MODE
-printf '%s\n' "$@" > "$STUB_LOG.args"; cat > "$STUB_LOG.stdin"; printf '%s' "${CCFIND_EXCLUDE-unset}" > "$STUB_LOG.exclude"
+printf '%s\n' "$@" > "$STUB_LOG.args"; printf '%s' "${CLAUDE_CONFIG_DIR-unset}" > "$STUB_LOG.config"; cat > "$STUB_LOG.stdin"; printf '%s' "${CCFIND_EXCLUDE-unset}" > "$STUB_LOG.exclude"
 [ -n "${STUB_READ:-}" ] && { cat "$STUB_READ" >/dev/null 2>&1 && echo read || echo blocked; } > "$STUB_LOG.read"
 head='"type":"result","num_turns":3,"total_cost_usd":0.0123'
 case "${STUB_MODE:-ok}" in
@@ -397,6 +397,27 @@ pbcopy-calls=$(grep -c . "$CLIP_LOG")
 clipboard=[$(clip)]"
 check "ccask (human): copies BEST once, its own ccfind call does not copy" 0 \
       "+copied to clipboard" "+pbcopy-calls=1" "+clipboard=[cd $T/work/beta && claude-second --resume $B"
+
+# Which account the agent runs under: the environment's by default, CCASK_ACCOUNT for one run,
+# and "ask" in the saved config for every run
+STUB_MODE=ok run env -u CLAUDE_CONFIG_DIR "$CCASK_BIN" invoice
+OUT="config=[$(cat "$STUB_LOG.config")]"; RC=0
+check "ccask runs the agent under ~/.claude when nothing says otherwise" 0 "+config=[$T/.claude]"
+STUB_MODE=ok run env CCASK_ACCOUNT=third "$CCASK_BIN" invoice
+OUT="config=[$(cat "$STUB_LOG.config")]"; RC=0
+check "CCASK_ACCOUNT=<name> picks the account for one run" 0 "+config=[$T/.claude-third]"
+STUB_MODE=ok run env CCASK_ACCOUNT=nope "$CCASK_BIN" invoice
+check "an unknown CCASK_ACCOUNT is an error" 2 "+not one of"
+python3 - "$T/.config/ccfind/accounts.json" <<'PYEOF'
+import json, sys
+p = sys.argv[1]; c = json.load(open(p)); c["ask"] = "second"; json.dump(c, open(p, "w"))
+PYEOF
+STUB_MODE=ok run env -u CLAUDE_CONFIG_DIR "$CCASK_BIN" invoice
+OUT="config=[$(cat "$STUB_LOG.config")]"; RC=0
+check "\"ask\" in the saved config picks it for every run" 0 "+config=[$T/.claude-second]"
+STUB_MODE=ok run env CCASK_ACCOUNT=third "$CCASK_BIN" invoice
+OUT="config=[$(cat "$STUB_LOG.config")]"; RC=0
+check "and CCASK_ACCOUNT still wins over it" 0 "+config=[$T/.claude-third]"
 
 # ---------------------------------------------------------------- guard + sandbox
 GUARD="$(dirname "$(readlink -f "$CCASK_BIN")")/ccask-guard"

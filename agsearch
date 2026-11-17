@@ -99,16 +99,19 @@ def _load_accounts():
         return ({str(n).lower(): os.path.join(HOME, d[2:]) if str(d).startswith("~/") else d
                  for n, d in cfg["accounts"].items()
                  if str(n).lower() not in _RESERVED_ACCOUNTS}, cfg.get("ask"))
+    except FileNotFoundError:
+        missing = True
     except (OSError, ValueError, KeyError, AttributeError):
-        pass
+        missing = False         # unreadable or half-edited: search what is found, keep the file
     accounts = _find_accounts()
-    try:
-        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-        with open(CONFIG_PATH, "w") as fh:
-            json.dump({"accounts": {n: "~" + d[len(HOME):] for n, d in accounts.items()},
-                       "ask": None}, fh, indent=2)
-    except OSError:
-        pass
+    if missing:
+        try:
+            os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+            with open(CONFIG_PATH, "w") as fh:
+                json.dump({"accounts": {n: "~" + d[len(HOME):] for n, d in accounts.items()},
+                           "ask": None}, fh, indent=2)
+        except OSError:
+            pass
     return accounts, None
 
 

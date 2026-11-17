@@ -65,8 +65,12 @@ if [ $CALIBRATE = 1 ]; then
   sed 's|^  CONFIG_DIR="$HOME/.claude-$ACCOUNT"$|  CONFIG_DIR="$HOME/.claude"  # sabotaged|' "$INSTALL_SH" > "$C/install-wrong-dir.sh"
   sed 's/_accounts_json({n: found\[n\] for n in keep})/_accounts_json({n: found[n] for n in keep if n == "sabotaged"})/' \
     "$CCFIND_BIN" > "$C/ccfind-setup-no-save"
-  sed 's/^            return _account_launchers(key)\[:1\] or \["env", f"{h\[.env.\]}={ACCOUNT_DIRS\[key\]}", h\["cmd"\]\]$/            return None  # sabotaged/' \
+  sed 's/^            return _account_launchers(key)\[:1\] or \[$/            return _account_launchers(key)[:1] or None and [  # sabotaged/' \
     "$CCFIND_BIN" > "$C/ccfind-no-account-home"
+  sed 's/^  ask_label=.*$/  ask_label="sabotaged"/' "$CCASK_BIN" > "$C/ask-nonote.sed"
+  mkdir -p "$C/ask-nonote"; cp "$ASK/ccask-system.md" "$ASK/ccask-guard" "$C/ask-nonote/"; mv "$C/ask-nonote.sed" "$C/ask-nonote/ccask"
+  sed 's/^            VERBOSE = True$/            pass  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-no-verbose"
+  chmod +x "$C/ask-nonote/ccask" "$C/ccfind-no-verbose"
   chmod +x "$C/ccfind-setup-no-save" "$C/ccfind-no-account-home"
   chmod +x "$C/ccfind-no-delta-reader" "$C/ccfind-no-delta-writer" "$C/ccfind-forgets-expired" \
            "$C/ccfind-no-expired-sig"
@@ -93,6 +97,8 @@ if [ $CALIBRATE = 1 ]; then
               "ccfind that forgets a session when its transcript is gone|CCFIND_BIN=$C/ccfind-forgets-expired" \
               "ccfind that gives expired sessions no signature|CCFIND_BIN=$C/ccfind-no-expired-sig" \
               "ccfind setup that never saves|CCFIND_BIN=$C/ccfind-setup-no-save" \
+              "ccask that does not say which account ran the agent|CCASK_BIN=$C/ask-nonote/ccask" \
+              "ccfind that ignores -v|CCFIND_BIN=$C/ccfind-no-verbose" \
               "ccfind that resumes another account's session with the default home|CCFIND_BIN=$C/ccfind-no-account-home" \
               "install.sh that puts an account's skill in the user dir|INSTALL_SH=$C/install-wrong-dir.sh" \
               "ccask that accepts invented ids|CCASK_BIN=$C/ask/ccask" \
@@ -152,7 +158,7 @@ fi
 # ---------------------------------------------------------------- fixtures
 T=$(mktemp -d "${TMPDIR%/}/ccfind-test.XXXXXX")
 export HOME="$T" XDG_CACHE_HOME="$T/.cache" STUB_LOG="$T/stub"
-unset CLAUDE_CONFIG_DIR CODEX_HOME XDG_CONFIG_HOME   # the caller's own accounts must not leak in
+unset CLAUDE_CONFIG_DIR CODEX_HOME GEMINI_CLI_HOME CURSOR_CONFIG_DIR XDG_DATA_HOME XDG_CONFIG_HOME   # the caller's own accounts must not leak in
 mkdir -p "$T/bin"
 ln -s "$CCFIND_BIN" "$T/bin/ccfind"
 cat > "$T/bin/claude" <<'STUB'
@@ -229,6 +235,11 @@ check "second session resumes via claude-second from its launch dir (not the sub
       0 "+cd $T/work/beta && claude-second --resume $B" "-$T/work/beta/sub &&"
 run ccfind -n invoice
 check "no account filter returns both accounts"  0 "+$A" "+$B"
+run ccfind -n -v zebrafinch
+check "-v says which accounts were searched, with counts and timing, and still answers" \
+      0 "+ccfind[v]: config" "+second " "+codex-work" "+session(s)" "+index ready in" "+$A"
+run ccfind -n zebrafinch
+check "without -v there is none of it" 0 "+$A" "-ccfind[v]"
 run ccfind -n ocelot
 check "an account without a launcher resumes through CLAUDE_CONFIG_DIR" \
       0 "+cd $T/work/zeta && env CLAUDE_CONFIG_DIR=$T/.claude-third claude --resume $F"
@@ -455,6 +466,12 @@ OUT="config=[$(cat "$STUB_LOG.config")]"; RC=0
 check "CCASK_ACCOUNT=<name> picks the account for one run" 0 "+config=[$T/.claude-third]"
 STUB_MODE=ok run env CCASK_ACCOUNT=nope "$CCASK_BIN" invoice
 check "an unknown CCASK_ACCOUNT is an error" 2 "+not one of"
+STUB_MODE=ok run env CCASK_ACCOUNT=third "$CCASK_BIN" -v invoice
+check "ccask ends with a note saying which account ran the agent" 0 "+via account third (~/.claude-third)"
+check "-v says so up front too, and where the choice came from" 0 \
+      "+ccask[v]: agent runs under account third" "+chosen by CCASK_ACCOUNT" "+ccask[v]: model haiku"
+STUB_MODE=ok run env -u CLAUDE_CONFIG_DIR "$CCASK_BIN" invoice
+check "without -v there is no verbose output" 0 "+via account claude (~/.claude)" "-ccask[v]"
 python3 - "$T/.config/ccfind/accounts.json" <<'PYEOF'
 import json, sys
 p = sys.argv[1]; c = json.load(open(p)); c["ask"] = "second"; json.dump(c, open(p, "w"))
@@ -462,6 +479,8 @@ PYEOF
 STUB_MODE=ok run env -u CLAUDE_CONFIG_DIR "$CCASK_BIN" invoice
 OUT="config=[$(cat "$STUB_LOG.config")]"; RC=0
 check "\"ask\" in the saved config picks it for every run" 0 "+config=[$T/.claude-second]"
+STUB_MODE=ok run env -u CLAUDE_CONFIG_DIR "$CCASK_BIN" -v invoice
+check "and the note and -v name it and its source" 0 "+via account second (~/.claude-second)" "+chosen by \"ask\" in the saved config"
 STUB_MODE=ok run env CCASK_ACCOUNT=third "$CCASK_BIN" invoice
 OUT="config=[$(cat "$STUB_LOG.config")]"; RC=0
 check "and CCASK_ACCOUNT still wins over it" 0 "+config=[$T/.claude-third]"

@@ -23,19 +23,25 @@ unless you know where the session was started.
 
 ## Accounts
 
-ccfind finds more than one account of the same service. For Claude it searches `~/.claude` and
-every `~/.claude-<name>` folder that has a `projects/` folder; for Codex, `~/.codex` and every
-`~/.codex-<name>` that has a `sessions/` folder; and the home that `CLAUDE_CONFIG_DIR` or
-`CODEX_HOME` points at, if it is somewhere else. It finds them on the first run and saves the
-list in `~/.config/ccfind/accounts.json`. **`ccfind setup`** walks you through it: which accounts to
+ccfind finds more than one account of the same service, for Claude, Codex, Cursor CLI, Gemini CLI
+and OpenCode. Another account is a sibling folder (`~/.claude-<name>`, `~/.codex-<name>`,
+`~/.cursor-<name>`) that holds sessions, or the home the tool's own variable points at when it is
+somewhere else: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CURSOR_CONFIG_DIR`, `GEMINI_CLI_HOME`,
+`XDG_DATA_HOME` (OpenCode). It finds them on the first run and saves the list in
+`~/.config/ccfind/accounts.json`. **`ccfind setup`** walks you through it: which accounts to
 search, and which one `ccfind ask` runs under and bills (`ccfind setup --accounts a,b --ask a
 --yes` answers it without a terminal). To change it by hand: edit that file to drop one, or to set `"ask"`, the account
 `ccfind ask` runs under and bills (`CCASK_ACCOUNT=<name>` overrides it for one run); delete it to
 look again. `ccfind -a <name>` limits a search to one account: `-a claude` is `~/.claude`,
-`-a codex` is `~/.codex`, a Claude account is its `<name>` and a Codex account is `codex-<name>`.
+`-a codex` is `~/.codex`, a Claude account is its `<name>` and every other service's is
+`<service>-<name>` (`codex-work`, `gemini-work`, `opencode-work`).
 A session of another account resumes with `claude-<name>` or `codex-<name>` when you have such a
 command, otherwise with `env CLAUDE_CONFIG_DIR=... claude` or `env CODEX_HOME=... codex`.
-Cursor, opencode and Gemini keep one home each, so there are no accounts to tell apart.
+`ccfind -v` (or `--verbose`) says which accounts were searched, how many sessions each holds and how
+long it took, and names agent CLIs it found on the machine but cannot read yet (Antigravity,
+Muse Code, Copilot, Qwen, Kiro, Droid, Goose, Crush, Aider and Amp are on that list). `ccfind ask`
+ends with a note naming the account that ran the agent, e.g. `via account work (~/.claude-work)`;
+`ccask -v` also says where that choice came from.
 
 ## Install
 

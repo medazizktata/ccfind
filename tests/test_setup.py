@@ -26,8 +26,8 @@ class SetupTests(unittest.TestCase):
         env = mock.patch.dict(os.environ, {}, clear=False)
         env.start()
         self.addCleanup(env.stop)
-        for var in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):    # the developer's own must not leak in
-            os.environ.pop(var, None)
+        for h in ag.ACCOUNT_HOMES.values():              # the developer's own must not leak in
+            os.environ.pop(h["env"], None)
 
     def run_setup(self, argv=(), answers=()):
         out = io.StringIO()

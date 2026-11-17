@@ -30,6 +30,7 @@ Usage:
     agsearch --thinking            # also index assistant thinking blocks
     agsearch --reindex             # force a full rebuild of the cache
     agsearch --version             # print the installed version and exit
+    agsearch -v ...                # verbose: the accounts searched, session counts, timings (stderr)
     agsearch _preview <sid> <seq> <thinking> <query...>   # (internal) fzf preview
 
 `-n` prints one entry per session, led by its session id, and drops colour when it is
@@ -69,29 +70,95 @@ HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
 CONFIG_PATH = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")),
                            "ccfind", "accounts.json")
-# Services whose sessions live under a per-account home folder. `prefix` is the folder under ~ of
-# the default account (a sibling ~/<prefix>-<name> is another one), `sub` is where its sessions are,
-# `cmd` starts it, `env` is the variable that points the tool at another home, and `key` is put in
-# front of a name so that accounts of different services cannot share one (-a codex-work).
+# Services whose sessions live under a per-account home folder, one entry each. `prefix` is the
+# default home under ~; `sub` the folder inside it that holds the sessions; `marker` what must exist
+# in a home for it to count; `cmd` starts the tool; `env` is the variable that points the tool at
+# another home, and when `env_parent` is set the variable names the folder that CONTAINS the home
+# (GEMINI_CLI_HOME holds a .gemini, XDG_DATA_HOME holds an opencode); `siblings` says a
+# ~/<prefix>-<name> folder is another account; `key` goes in front of a name so that accounts of
+# two services cannot clash (-a codex-work); `default` is the -a word for the default account.
+# A tool with several accounts but no entry here is not found; add one entry, and an adapter in
+# SOURCES if its sessions are not read yet.
 ACCOUNT_HOMES = {
-    "cc": {"prefix": ".claude", "sub": "projects", "cmd": "claude", "env": "CLAUDE_CONFIG_DIR",
-           "key": "", "default": "claude"},
-    "codex": {"prefix": ".codex", "sub": "sessions", "cmd": "codex", "env": "CODEX_HOME",
-              "key": "codex-", "default": "codex"},
+    "cc": {"prefix": ".claude", "sub": "projects", "marker": "projects", "cmd": "claude",
+           "env": "CLAUDE_CONFIG_DIR", "env_parent": None, "siblings": True, "key": "",
+           "default": "claude"},
+    "codex": {"prefix": ".codex", "sub": "sessions", "marker": "sessions", "cmd": "codex",
+              "env": "CODEX_HOME", "env_parent": None, "siblings": True, "key": "codex-",
+              "default": "codex"},
+    "gemini": {"prefix": ".gemini", "sub": "tmp", "marker": "tmp", "cmd": "gemini",
+               "env": "GEMINI_CLI_HOME", "env_parent": ".gemini", "siblings": False,
+               "key": "gemini-", "default": "gemini"},
+    "cursor": {"prefix": ".cursor", "sub": "projects", "marker": "projects", "cmd": "cursor-agent",
+               "env": "CURSOR_CONFIG_DIR", "env_parent": None, "siblings": True, "key": "cursor-",
+               "default": "cursor"},
+    "opencode": {"prefix": os.path.join(".local", "share", "opencode"), "sub": "",
+                 "marker": "opencode.db", "cmd": "opencode", "env": "XDG_DATA_HOME",
+                 "env_parent": "opencode", "siblings": False, "key": "opencode-",
+                 "default": "opencode"},
 }
 _RESERVED_ACCOUNTS = ("all", "global", "default") + tuple(h["default"] for h in ACCOUNT_HOMES.values())
+
+
+VERBOSE = False
+
+
+def vlog(msg):
+    """-v/--verbose: what ccfind is doing, on stderr so that results on stdout stay clean."""
+    if VERBOSE:
+        print("ccfind[v]: " + msg, file=sys.stderr)
+
+
+# Agent CLIs whose sessions ccfind does not read yet: name -> folders under ~ that say it is used,
+# and commands that say so. Listed by -v and `ccfind setup` so that a missing tool is not silent.
+# Moving one into SOURCES needs its session format, which has to be read from a real folder.
+NOT_INDEXED = {
+    "antigravity": ([os.path.join(".gemini", "antigravity-cli"), os.path.join(".gemini", "antigravity")],
+                    ["agy", "antigravity"]),
+    "muse": ([".muse"], ["muse"]),
+    "copilot": ([".copilot"], ["copilot"]),
+    "qwen": ([".qwen"], ["qwen"]),
+    "kiro": ([".kiro"], ["kiro-cli", "kiro"]),
+    "droid": ([".factory"], ["droid"]),
+    "goose": ([os.path.join(".config", "goose")], ["goose"]),
+    "crush": ([os.path.join(".config", "crush")], ["crush"]),
+    "amp": ([os.path.join(".config", "amp")], ["amp"]),
+    "aider": ([".aider.chat.history.md", ".aider-desk"], ["aider"]),
+}
+
+
+def _unindexed_tools():
+    """Names of the tools in NOT_INDEXED that this machine has a folder or a command for."""
+    return [name for name, (dirs, cmds) in NOT_INDEXED.items()
+            if any(os.path.exists(os.path.join(HOME, d)) for d in dirs)
+            or any(shutil.which(c) for c in cmds)]
 
 
 def _tilde(d):
     return "~" + d[len(HOME):] if d.startswith(HOME + os.sep) else d
 
 
+def _home_of(h, value):
+    """The home folder a tool's environment variable selects (the variable may name its parent)."""
+    return os.path.join(value, h["env_parent"]) if h["env_parent"] else value
+
+
+def _sessions_dir(h, home):
+    """Where a home keeps its sessions; the home itself when `sub` is empty (no trailing slash)."""
+    return os.path.join(home, h["sub"]) if h["sub"] else home
+
+
+def _env_value(h, home):
+    """What to set the variable to, to make the tool use `home`: the inverse of _home_of."""
+    return os.path.dirname(home) if h["env_parent"] else home
+
+
 def _find_accounts():
     """Every other account of each service: {key: (source, home dir)}.
 
-    A sibling ~/<prefix>-<name> that has the sessions folder, and the home the tool's own
-    environment variable points at (CLAUDE_CONFIG_DIR, CODEX_HOME) when it is neither the
-    default nor one of those."""
+    A sibling ~/<prefix>-<name> that has the marker (for services that have that convention),
+    and the home the tool's own environment variable points at, when it is neither the default
+    nor one of those."""
     found = {}
     try:
         names = sorted(os.listdir(HOME))
@@ -99,21 +166,22 @@ def _find_accounts():
         names = []
     for source, h in ACCOUNT_HOMES.items():
         default = os.path.join(HOME, h["prefix"])
-        for n in names:
+        for n in names if h["siblings"] else ():
             name = n[len(h["prefix"]) + 1:].lower()
             key = h["key"] + name
             if (n.startswith(h["prefix"] + "-") and name and key not in _RESERVED_ACCOUNTS
-                    and os.path.isdir(os.path.join(HOME, n, h["sub"]))):
+                    and os.path.exists(os.path.join(HOME, n, h["marker"]))):
                 found[key] = (source, os.path.join(HOME, n))
         env = os.environ.get(h["env"], "")
-        if (env and os.path.realpath(env) != os.path.realpath(default)
-                and os.path.isdir(os.path.join(env, h["sub"]))
-                and not any(os.path.realpath(d) == os.path.realpath(env) for _s, d in found.values())):
-            base = os.path.basename(env.rstrip(os.sep)).lstrip(".").lower()
-            key = h["key"] + (base[len(h["prefix"]):] if base.startswith(h["prefix"].lstrip(".") + "-")
-                              else base)
+        home = _home_of(h, env) if env else ""
+        if (home and os.path.realpath(home) != os.path.realpath(default)
+                and os.path.exists(os.path.join(home, h["marker"]))
+                and not any(os.path.realpath(d) == os.path.realpath(home) for _s, d in found.values())):
+            base = os.path.basename((env if h["env_parent"] else home).rstrip(os.sep)).lstrip(".").lower()
+            pre = h["prefix"].lstrip(".") + "-"
+            key = h["key"] + (base[len(pre):] if base.startswith(pre) else base)
             if key not in _RESERVED_ACCOUNTS and key not in found:
-                found[key] = (source, env)
+                found[key] = (source, home)
     return found
 
 
@@ -162,14 +230,16 @@ def _accounts_json(accounts):
 _ACCOUNTS, ASK_ACCOUNT = _load_accounts()
 ACCOUNT_DIRS = {k: d for k, (_s, d) in _ACCOUNTS.items()}         # key -> home dir
 ACCOUNT_SOURCE = {k: s for k, (s, _d) in _ACCOUNTS.items()}       # key -> "cc", "codex"
-ACCOUNT_PROJECTS = {k: os.path.join(d, ACCOUNT_HOMES[ACCOUNT_SOURCE[k]]["sub"])
+ACCOUNT_PROJECTS = {k: _sessions_dir(ACCOUNT_HOMES[ACCOUNT_SOURCE[k]], d)
                     for k, d in ACCOUNT_DIRS.items()}             # key -> where its sessions are
+DEFAULT_ROOTS = {h["default"]: _sessions_dir(h, os.path.join(HOME, h["prefix"]))
+                 for h in ACCOUNT_HOMES.values()}                 # -a claude, -a codex, ...
 
 
 def account_roots(source):
     """Where `source`'s sessions are: the default account's folder, then every other account's."""
     h = ACCOUNT_HOMES[source]
-    return [os.path.join(HOME, h["prefix"], h["sub"])] + [
+    return [_sessions_dir(h, os.path.join(HOME, h["prefix"]))] + [
         ACCOUNT_PROJECTS[k] for k in ACCOUNT_DIRS if ACCOUNT_SOURCE[k] == source]
 
 
@@ -750,7 +820,7 @@ SOURCES = {
         "subagents": False, "launch_dir": False,
     },
     "gemini": {
-        "roots": [GEMINI_DIR], "match": _is_gemini_chat, "parse": None,
+        "roots": account_roots("gemini"), "match": _is_gemini_chat, "parse": None,
         "label": "gemini-cli", "colour": "36",
         # --resume takes a project-scoped index number, which is not a stable handle for a
         # session found by search. --session-file takes the transcript path, which is.
@@ -758,13 +828,13 @@ SOURCES = {
         "subagents": False, "launch_dir": False,
     },
     "cursor": {
-        "roots": [CURSOR_DIR], "match": _is_cursor_transcript, "parse": None,
+        "roots": account_roots("cursor"), "match": _is_cursor_transcript, "parse": None,
         "label": "cursor-cli", "colour": "32",
         "resume": ("id", ["cursor-agent", "--resume", "{sid}"]),
         "subagents": False, "launch_dir": False,
     },
     "opencode": {
-        "roots": [OPENCODE_DIR], "match": _is_opencode_db, "parse": None,
+        "roots": account_roots("opencode"), "match": _is_opencode_db, "parse": None,
         "label": "opencode", "colour": "33",
         # `opencode run` is the non-interactive form and demands a message; the bare command
         # opens the TUI on that session, which is what resuming means here.
@@ -1288,7 +1358,7 @@ def run_by_agent():
     return any(os.environ.get(v) for v in AGENT_VARS)
 
 
-ACCOUNTS = {"claude": PROJECTS_DIR, "default": PROJECTS_DIR, "codex": CODEX_DIR, **ACCOUNT_PROJECTS,
+ACCOUNTS = {**DEFAULT_ROOTS, "default": PROJECTS_DIR, **ACCOUNT_PROJECTS,
             "all": None, "global": None}
 
 
@@ -2023,9 +2093,9 @@ def resume_plan(sid, cwd):
 
 
 def _launcher_name(key):
-    """What you type to start the tool under account `key`: claude-<name>, codex-<name>."""
-    cmd = ACCOUNT_HOMES[ACCOUNT_SOURCE[key]]["cmd"]
-    return key if key.startswith(cmd + "-") else cmd + "-" + key
+    """What you type to start the tool under account `key`: claude-<name>, codex-<name>, ..."""
+    h = ACCOUNT_HOMES[ACCOUNT_SOURCE[key]]
+    return key if h["key"] else h["cmd"] + "-" + key
 
 
 def _account_launchers(key):
@@ -2042,7 +2112,8 @@ def _account_launch(path):
     for key, root in ACCOUNT_PROJECTS.items():
         if path.startswith(root + os.sep):
             h = ACCOUNT_HOMES[ACCOUNT_SOURCE[key]]
-            return _account_launchers(key)[:1] or ["env", f"{h['env']}={ACCOUNT_DIRS[key]}", h["cmd"]]
+            return _account_launchers(key)[:1] or [
+                "env", f"{h['env']}={_env_value(h, ACCOUNT_DIRS[key])}", h["cmd"]]
     return None
 
 
@@ -2594,13 +2665,17 @@ def cmd_setup(argv):
     names = sorted(found, key=lambda k: (found[k][0], k))
     print(f"ccfind keeps its accounts in {CONFIG_PATH}")
     if names:
-        print("Accounts found besides the default ones (~/.claude, ~/.codex):")
+        print("Accounts found besides the default ones:")
         for n, name in enumerate(names, 1):
             mark = "searched" if name in ACCOUNT_DIRS or not saved else "not searched"
             print(f"  {n}) {name:<16} {ACCOUNT_HOMES[found[name][0]]['cmd']:<7} "
                   f"{home_rel(found[name][1])}   [{mark}]")
     else:
         print("No other accounts found: only the default ones are searched.")
+    skipped = _unindexed_tools()
+    if skipped:
+        print("Also on this machine, but their sessions are not searched (no reader yet): "
+              + ", ".join(skipped))
 
     try:
         if names:
@@ -2826,6 +2901,9 @@ def main(argv):
         elif a in ("-V", "--version"):
             print("agsearch " + __version__)
             return 0
+        elif a in ("-v", "--verbose"):
+            global VERBOSE
+            VERBOSE = True
         elif a == "--agent":             # agent mode: implies -n, no clipboard
             agent_flag = no_fzf = True
         elif a in ("--copy", "--no-copy"):
@@ -2842,16 +2920,62 @@ def main(argv):
     global AGENT, COPY
     AGENT = agent_flag or run_by_agent()
     COPY = (not AGENT) if copy_flag is None else copy_flag
+    t0 = time.perf_counter()
     lines = build_index(include_thinking=thinking, force=reindex)
+    if VERBOSE:
+        _verbose_accounts()
+        vlog(f"index ready in {1000 * (time.perf_counter() - t0):.0f} ms"
+             + (" (--reindex: every transcript re-read)" if reindex else ""))
     lines = apply_scope(lines, here=here, project=project, account=account)
+    if VERBOSE and (here or project or account):
+        vlog("scope: " + ", ".join(x for x in (f"-a {account}" if account else "",
+                                               f"-p {project}" if project else "",
+                                               "--here" if here else "") if x))
     if not lines:
         print(f"No sessions found for account {account!r}." if ACCOUNTS.get(account)
               else "No indexed sessions found.", file=sys.stderr)
         return 1
 
     if no_fzf:
-        return print_matches(lines, query)
+        t1 = time.perf_counter()
+        rc = print_matches(lines, query)
+        vlog(f"query {query!r} ranked and printed in {1000 * (time.perf_counter() - t1):.0f} ms")
+        return rc
     return run_fzf(lines, query, thinking=thinking, no_resume=no_resume, fuzzy=fuzzy)
+
+
+def _account_counts():
+    """Sessions per account in the index, by where each one's transcript lives (or lived)."""
+    try:
+        with open(INDEX_PATH) as fh:
+            index = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    roots = sorted({**DEFAULT_ROOTS, **ACCOUNT_PROJECTS}.items(), key=lambda kv: -len(kv[1]))
+    counts = {}
+    for info in index.values():
+        path = info.get("path") or info.get("was") or ""
+        key = next((k for k, root in roots if path == root or path.startswith(root + os.sep)), "?")
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _verbose_accounts():
+    """The accounts searched and how many sessions each holds, for -v."""
+    vlog(f"config: {CONFIG_PATH} ({'saved' if os.path.exists(CONFIG_PATH) else 'not saved yet'})")
+    counts = _account_counts()
+    rows = [(h["default"], src, os.path.join(HOME, h["prefix"])) for src, h in ACCOUNT_HOMES.items()]
+    rows += [(k, ACCOUNT_SOURCE[k], ACCOUNT_DIRS[k]) for k in ACCOUNT_DIRS]
+    for key, src, home in rows:
+        n = counts.get(key, 0)
+        vlog(f"  {key:<18} {src:<9} {_tilde(home)}  " + (f"{n} session(s)" if n or os.path.isdir(home)
+                                                         else "not on this machine"))
+    if counts.get("?"):
+        vlog(f"  {'(no transcript left)':<18} {'':<9} {'':<2}{counts['?']} session(s), kept as expired")
+    vlog(f"  ask bills: {ASK_ACCOUNT or 'whichever the environment selects'}")
+    skipped = _unindexed_tools()
+    if skipped:
+        vlog("not indexed (no session reader yet): " + ", ".join(skipped))
 
 
 def _entry():

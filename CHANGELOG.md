@@ -19,6 +19,14 @@ migration in the same line.
   replies, each cut to 2,000 characters, with no tool output and no automation runs. The
   rows are marked `expired`, Enter and `agsearch read` open them read-only, and ctrl-y copies
   the read command, since there is nothing left to resume.
+- **`-v` / `--verbose`** prints, on stderr, which accounts were searched with their session counts,
+  how long the index took and what the scope was; `ccask -v` says which account runs the agent
+  and why. Agent CLIs found on the machine whose sessions are not read yet are named, not skipped
+  silently.
+- **`ccfind ask` ends with the account that ran the agent**, e.g. `ccask: haiku via account work
+  (~/.claude-work), 3 turns, ...`.
+- **Accounts for Gemini CLI, Cursor CLI and OpenCode too** (`GEMINI_CLI_HOME`, `CURSOR_CONFIG_DIR`,
+  `XDG_DATA_HOME`, and `~/.cursor-<name>`), named `<service>-<name>`; Codex was added just before.
 - **More than one account per service, not only Claude.** `~/.codex-<name>` folders (with a
   `sessions/` folder) are Codex accounts, named `codex-<name>` (`-a codex-work`; `-a codex` is
   `~/.codex`), and a home that `CLAUDE_CONFIG_DIR` or `CODEX_HOME` points at is found even if it

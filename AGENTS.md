@@ -15,12 +15,22 @@ How an agent should use and maintain `ccfind`. Usage for people is in `README.md
    sessions under another account's folder `~/.claude-<name>`.
 
 `ccfind -p <path-substring> "<words>"` limits the search to matching project paths.
-`ccfind -a claude|codex|<key>|all` limits it to one account's transcripts. Accounts are found per
-service (`ACCOUNT_HOMES`): `~/.claude-<name>` with a `projects/` folder is the Claude account
-`<name>`, `~/.codex-<name>` with a `sessions/` folder is the Codex account `codex-<name>`, and the
-home `CLAUDE_CONFIG_DIR` or `CODEX_HOME` points at counts too. Adding a service with several
-accounts means one entry there; a service nobody can tell accounts apart in (cursor, opencode,
-gemini) needs none. The default is all. The accounts are
+`ccfind -a <default>|<key>|all` limits it to one account's transcripts (`claude`, `codex`,
+`gemini`, `cursor`, `opencode` are the default accounts). Accounts are found per service
+(`ACCOUNT_HOMES`, one entry each): `~/.claude-<name>` with a `projects/` folder is the Claude
+account `<name>`, `~/.codex-<name>` the Codex account `codex-<name>`, and the home a tool's own
+variable points at counts too (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CURSOR_CONFIG_DIR`,
+`GEMINI_CLI_HOME`, `XDG_DATA_HOME`; the last two name the folder that contains the home, see
+`env_parent`). Gemini and OpenCode have no sibling-folder convention, so their accounts come from
+the variable or the saved file. Cursor's chat titles are read from `~/.cursor/chats` only, so
+another Cursor account's sessions have no titles.
+
+To add a tool: put its session format in `SOURCES` (an adapter needs a real session folder to
+read it from, so it cannot be written from a description) and one entry in `ACCOUNT_HOMES`. Tools
+seen on the machine without an adapter are listed in `NOT_INDEXED` and named by `-v` and `setup`.
+`ccfind -v` prints to stderr only, so results stay clean. `ccask` ends with
+`via account <name> (<dir>)` and, with `-v`, says whether that came from `CCASK_ACCOUNT`, the
+saved `"ask"` or the environment. The default is all. The accounts are
 found on the first run and saved in `~/.config/ccfind/accounts.json`. `ccfind setup` is the
 interactive way to change it (`cmd_setup`; `--accounts`, `--ask NAME|claude|none` and `--yes` skip
 the questions; `ccfind setup docker` is still a search, see `_is_setup`). Editing the file also

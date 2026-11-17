@@ -79,7 +79,9 @@ sys.exit(bad)
 PY
 }
 
-USAGE="usage: ccask [-a $ACCOUNT_WORDS] [--agent] [--copy|--no-copy] [--] \"words or a phrase you remember\""
+USAGE="usage: ccask [-a $ACCOUNT_WORDS] [-v] [--agent] [--copy|--no-copy] [--] \"words or a phrase you remember\""
+VERBOSE=0
+vlog() { [ "$VERBOSE" = 1 ] && echo "ccask[v]: $*" >&2; return 0; }
 
 # Same list as ccfind's AGENT_VARS (test.sh checks they agree). CCFIND_AGENT=1/0 overrides.
 AGENT_VARS=(CLAUDECODE AI_AGENT OPENCODE CURSOR_AGENT CODEX_SANDBOX)
@@ -92,13 +94,23 @@ run_by_agent() {
 main() {
   # Which account the agent runs under and bills: CCASK_ACCOUNT=<name> for this run, else "ask"
   # in ~/.config/ccfind/accounts.json, else the account the environment already selects.
+  local i ask_from="the environment"
+  [ -z "$ASK_DIR" ] || ask_from='"ask" in the saved config'
   if [ -n "${CCASK_ACCOUNT:-}" ]; then
-    ASK_DIR="" ; local i
+    ASK_DIR="" ; ask_from="CCASK_ACCOUNT"
     for i in ${ALL_NAMES[@]+"${!ALL_NAMES[@]}"}; do
       [ "${ALL_NAMES[$i]}" = "$CCASK_ACCOUNT" ] && ASK_DIR=${ALL_DIRS[$i]}
     done
     [ -n "$ASK_DIR" ] || die "CCASK_ACCOUNT=$CCASK_ACCOUNT is not one of: ${ACCOUNT_WORDS//|/, }" 2
   fi
+  # the account the agent runs under and bills, named for the note printed after the answer
+  local eff="${ASK_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}" ask_name=""
+  for i in ${ALL_NAMES[@]+"${!ALL_NAMES[@]}"}; do
+    [ "${ALL_DIRS[$i]}" = "$eff" ] && ask_name=${ALL_NAMES[$i]}
+  done
+  [ -n "$ask_name" ] || ask_name=$(basename "$eff")
+  local tilde='~' ask_label
+  ask_label="account $ask_name (${eff/#$HOME/$tilde})"
   local account="" words=() agent=0 copy=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -115,6 +127,7 @@ main() {
         esac
         shift 2 ;;
       -h|--help) echo "$USAGE"; exit 0 ;;
+      -v|--verbose) VERBOSE=1; shift ;;
       --agent) agent=1; shift ;;
       --copy) copy=1; shift ;;
       --no-copy) copy=0; shift ;;
@@ -125,6 +138,8 @@ main() {
   done
   local query="${words[*]:-}"
   [ -n "${query// /}" ] || { echo "$USAGE" >&2; exit 2; }
+  vlog "accounts searched: ${ACCOUNT_WORDS//|/, }"
+  vlog "agent runs under $ask_label, chosen by $ask_from"
   local scope=()
   [ -n "$account" ] && scope=(-a "$account")
   [ $agent = 1 ] || ! run_by_agent || agent=1
@@ -154,9 +169,11 @@ main() {
   # fail closed: never run the agent without its guard and sandbox
   [ -x "$DIR/ccask-guard" ] || die "missing or not executable: $DIR/ccask-guard"
 
+  vlog "model $MODEL, budget \$$BUDGET_USD, time limit ${TIME_LIMIT}s, tool limit $MAX_TOOLS, $(( ${#hide[@]} / 2 )) transcript(s) hidden"
   echo "ccask: ranking candidates with ccfind…" >&2
   local cands rc
   cands=$(ccfind -n --no-copy ${scope[@]+"${scope[@]}"} -- "$query" 2>&1); rc=$?
+  vlog "ccfind gave $(grep -cE '^[0-9a-f]{8}' <<<"$cands") candidate(s)"
   # exit 1 with "No matches." is a valid answer for the agent; anything else is a crash
   if [ $rc -ne 0 ] && ! grep -qE 'No matches|No indexed sessions|No sessions found' <<<"$cands"; then
     die "ccfind failed (exit $rc): $(tail -3 <<<"$cands")"
@@ -231,7 +248,7 @@ $cands"
       success)  echo "ccask: claude returned no structured answer" >&2 ;;
       *)        echo "ccask: claude reported an error ($subtype)" >&2 ;;
     esac
-    printf 'ccask: %s, %s turns, $%.4f (raw response: %s)\n' "$MODEL" "$turns" "$cost" \
+    printf 'ccask: %s via %s, %s turns, $%.4f (raw response: %s)\n' "$MODEL" "$ask_label" "$turns" "$cost" \
       "$DIR/.ccask-last-output.json" >&2
     echo "ccask: falling back to the ccfind ranking:" >&2
     echo "$cands"
@@ -257,7 +274,7 @@ $cands"
     d=$(describe_ids "$id") || rc=1
     [ -n "$d" ] && echo "ALSO  $d  — $w"
   done < <(jq -r '.also[] | [.id, .why] | @tsv' <<<"$ans")
-  printf 'ccask: %s, %s turns, %s tool calls (limit %s), $%.4f\n' "$MODEL" "$turns" \
+  printf 'ccask: %s via %s, %s turns, %s tool calls (limit %s), $%.4f\n' "$MODEL" "$ask_label" "$turns" \
     "$(cat "$counter" 2>/dev/null || echo 0)" "$MAX_TOOLS" "$cost" >&2
   return $rc
 }

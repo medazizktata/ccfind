@@ -22,8 +22,8 @@ class AccountTests(unittest.TestCase):
         env = mock.patch.dict(os.environ, {}, clear=False)
         env.start()
         self.addCleanup(env.stop)
-        for var in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):    # the developer's own must not leak in
-            os.environ.pop(var, None)
+        for h in ag.ACCOUNT_HOMES.values():              # the developer's own must not leak in
+            os.environ.pop(h["env"], None)
 
     def account(self, prefix, name, sub, launcher=False):
         d = os.path.join(self.home, f".{prefix}-{name}")
@@ -47,7 +47,7 @@ class AccountTests(unittest.TestCase):
         ag._ACCOUNTS = accounts
         ag.ACCOUNT_DIRS = {k: d for k, (_s, d) in accounts.items()}
         ag.ACCOUNT_SOURCE = {k: s for k, (s, _d) in accounts.items()}
-        ag.ACCOUNT_PROJECTS = {k: os.path.join(d, ag.ACCOUNT_HOMES[s]["sub"])
+        ag.ACCOUNT_PROJECTS = {k: ag._sessions_dir(ag.ACCOUNT_HOMES[s], d)
                                for k, (s, d) in accounts.items()}
         ag.ASK_ACCOUNT = ask
 
@@ -190,6 +190,64 @@ class AccountTests(unittest.TestCase):
             self.assertEqual(self.ag._account_launch(path), [launcher])
             argv = self.ag._account_launch(path) + ["resume", "s1"]
             self.assertEqual(self.ag.resume_command("", argv), "codex-work resume s1")
+
+    # -- the other services
+
+    def test_every_service_has_a_complete_entry_and_no_two_share_a_word(self):
+        homes = self.ag.ACCOUNT_HOMES
+        fields = {"prefix", "sub", "marker", "cmd", "env", "env_parent", "siblings", "key", "default"}
+        for source, h in homes.items():
+            self.assertEqual(set(h), fields, source)
+        for field in ("default", "env", "prefix"):
+            values = [h[field] for h in homes.values()]
+            self.assertEqual(len(values), len(set(values)), field)
+        keys = [h["key"] for h in homes.values() if h["key"]]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_gemini_accounts_come_from_its_variable_which_names_the_folder_that_holds_the_home(self):
+        parent = os.path.join(self.home, "work")
+        os.makedirs(os.path.join(parent, ".gemini", "tmp"))
+        os.environ["GEMINI_CLI_HOME"] = parent
+        self.assertEqual(self.ag._find_accounts(),
+                         {"gemini-work": ("gemini", os.path.join(parent, ".gemini"))})
+
+    def test_a_gemini_account_resumes_with_its_variable_set_to_the_parent_not_the_home(self):
+        parent = os.path.join(self.home, "work")
+        home = os.path.join(parent, ".gemini")
+        os.makedirs(os.path.join(home, "tmp"))
+        self.use({"gemini-work": ("gemini", home)})
+        path = os.path.join(home, "tmp", "abc", "chats", "session-1.json")
+        self.assertEqual(self.ag._account_launch(path), ["env", "GEMINI_CLI_HOME=" + parent, "gemini"])
+
+    def test_opencode_accounts_come_from_xdg_data_home_and_their_root_is_the_home_itself(self):
+        parent = os.path.join(self.home, "data-work")
+        home = os.path.join(parent, "opencode")
+        os.makedirs(home)
+        with open(os.path.join(home, "opencode.db"), "w"):
+            pass
+        os.environ["XDG_DATA_HOME"] = parent
+        self.assertEqual(self.ag._find_accounts(), {"opencode-data-work": ("opencode", home)})
+        self.use({"opencode-data-work": ("opencode", home)})
+        self.assertEqual(self.ag.account_roots("opencode")[1], home)
+        self.assertEqual(self.ag._account_launch(os.path.join(home, "opencode.db")),
+                         ["env", "XDG_DATA_HOME=" + parent, "opencode"])
+
+    def test_xdg_data_home_at_its_usual_place_is_not_a_second_opencode_account(self):
+        share = os.path.join(self.home, ".local", "share")
+        os.makedirs(os.path.join(share, "opencode"))
+        with open(os.path.join(share, "opencode", "opencode.db"), "w"):
+            pass
+        os.environ["XDG_DATA_HOME"] = share
+        self.assertEqual(self.ag._find_accounts(), {})
+
+    def test_a_cursor_home_beside_the_default_is_an_account_and_gemini_has_no_such_convention(self):
+        c = self.account("cursor", "work", "projects")
+        self.account("gemini", "work", "tmp")
+        self.assertEqual(self.ag._find_accounts(), {"cursor-work": ("cursor", c)})
+
+    def test_dash_a_knows_the_default_account_of_every_service(self):
+        for h in self.ag.ACCOUNT_HOMES.values():
+            self.assertIn(h["default"], self.ag.ACCOUNTS)
 
     def test_the_default_accounts_and_other_paths_use_the_plain_tool(self):
         self.use({"alpha": ("cc", self.claude("alpha", launcher=True))})

@@ -14,6 +14,7 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO="$(dirname "$HERE")"; ASK="$REPO/ask"
 CCFIND_BIN="${CCFIND_BIN:-$REPO/agsearch}"
 CCASK_BIN="${CCASK_BIN:-$ASK/ccask}"
+INSTALL_SH="${INSTALL_SH:-$REPO/install.sh}"
 REAL=0 LIVE=0 CALIBRATE=0
 for a in "$@"; do
   case "$a" in
@@ -47,7 +48,7 @@ if [ $CALIBRATE = 1 ]; then
   C=$(mktemp -d "${TMPDIR%/}/ccfind-calibrate.XXXXXX")
   echo "calibration builds in $C"
   printf '#!/bin/sh\nexit 0\n' > "$C/noop-ccfind"; chmod +x "$C/noop-ccfind"
-  sed 's/^        argv\[0\] = SECOND_BIN$/        pass  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-no-routing"
+  sed 's/^        argv\[:1\] = _account_launch(info.get("path", "")) or argv\[:1\]$/        pass  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-no-routing"
   sed 's/^        lines = \[l for l in lines if l.split(SEP, 1)\[0\] in keep\]$/        pass  # sabotaged/' \
     "$CCFIND_BIN" > "$C/ccfind-no-account"
   sed 's/^    return any(os.environ.get(v) for v in AGENT_VARS)$/    return False  # sabotaged/' \
@@ -61,6 +62,7 @@ if [ $CALIBRATE = 1 ]; then
     "$CCFIND_BIN" > "$C/ccfind-no-delta-writer"
   sed 's/^    expired = _keep_expired(.*$/    expired = []  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-forgets-expired"
   sed 's/^            if entry.get("expired"):$/            if False:  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-no-expired-sig"
+  sed 's|^  CONFIG_DIR="$HOME/.claude-$ACCOUNT"$|  CONFIG_DIR="$HOME/.claude"  # sabotaged|' "$INSTALL_SH" > "$C/install-wrong-dir.sh"
   chmod +x "$C/ccfind-no-delta-reader" "$C/ccfind-no-delta-writer" "$C/ccfind-forgets-expired" \
            "$C/ccfind-no-expired-sig"
   for d in ask ask-openguard ask-opensb; do
@@ -77,7 +79,7 @@ if [ $CALIBRATE = 1 ]; then
   chmod +x "$C/ccfind-no-routing" "$C/ccfind-no-account" "$C"/ask*/ccask "$C"/ask*/ccask-guard
   cal_fail=0
   for spec in "do-nothing ccfind|CCFIND_BIN=$C/noop-ccfind" \
-              "ccfind without second routing|CCFIND_BIN=$C/ccfind-no-routing" \
+              "ccfind without per-account routing|CCFIND_BIN=$C/ccfind-no-routing" \
               "ccfind without account filter|CCFIND_BIN=$C/ccfind-no-account" \
               "ccfind that never detects agents|CCFIND_BIN=$C/ccfind-no-agent-detect" \
               "ccfind that ignores CCFIND_EXCLUDE|CCFIND_BIN=$C/ccfind-no-exclude" \
@@ -85,6 +87,7 @@ if [ $CALIBRATE = 1 ]; then
               "ccfind that rewrites sessions.tsv instead of the delta|CCFIND_BIN=$C/ccfind-no-delta-writer" \
               "ccfind that forgets a session when its transcript is gone|CCFIND_BIN=$C/ccfind-forgets-expired" \
               "ccfind that gives expired sessions no signature|CCFIND_BIN=$C/ccfind-no-expired-sig" \
+              "install.sh that puts an account's skill in the user dir|INSTALL_SH=$C/install-wrong-dir.sh" \
               "ccask that accepts invented ids|CCASK_BIN=$C/ask/ccask" \
               "guard that allows every tool call|CCASK_BIN=$C/ask-openguard/ccask" \
               "ccask that leaks the caller's session to its agent|CCASK_BIN=$C/ask-noexclude/ccask" \
@@ -114,19 +117,29 @@ fi
 # ---------------------------------------------------------------- real data (before HOME moves)
 REAL_HOME=$HOME
 if [ $REAL = 1 ]; then
-  echo "real transcripts (known sessions; results change as transcripts do):"
-  run env HOME="$REAL_HOME" "$CCFIND_BIN" -n "gated invoice page"
-  top=$(grep -E '^[0-9a-f]{8}' <<<"$OUT" | head -3)
-  OUT=$top; RC=0
-  check "\"gated invoice page\" has 00000000 in the top 3" 0 "+00000000"
-  run env HOME="$REAL_HOME" "$CCFIND_BIN" -n -a claude "gated invoice page"
-  check "-a claude excludes the second session 00000000" "$RC" "-00000000"
+  echo "real transcripts (results change as transcripts do):"
+  if [ -n "${CCFIND_REAL_QUERY:-}" ] && [ -n "${CCFIND_REAL_SID:-}" ]; then
+    run env HOME="$REAL_HOME" "$CCFIND_BIN" -n "$CCFIND_REAL_QUERY"
+    top=$(grep -E '^[0-9a-f]{8}' <<<"$OUT" | head -3)
+    OUT=$top; RC=0
+    check "\"$CCFIND_REAL_QUERY\" has ${CCFIND_REAL_SID:0:8} in the top 3" 0 "+${CCFIND_REAL_SID:0:8}"
+    if [ -n "${CCFIND_REAL_ACCOUNT:-}" ]; then      # the account that session lives in
+      run env HOME="$REAL_HOME" "$CCFIND_BIN" -n -a claude "$CCFIND_REAL_QUERY"
+      check "-a claude excludes the $CCFIND_REAL_ACCOUNT session" "$RC" "-${CCFIND_REAL_SID:0:8}"
+    fi
+  else
+    echo "  skip  set CCFIND_REAL_QUERY and CCFIND_REAL_SID (and CCFIND_REAL_ACCOUNT) to check one of your sessions"
+  fi
 fi
 if [ $LIVE = 1 ]; then
   echo "live Haiku run (costs money; Haiku picked the right best match 1 in 3 before):"
-  run env HOME="$REAL_HOME" "$CCASK_BIN" -a second "second website invoice page addition"
-  echo "$OUT" | sed 's/^/          /' | head -12
-  check "ccask BEST is 00000000" 0 "~^BEST .*" "+00000000-0000-4000-8000-000000000000"
+  if [ -n "${CCFIND_REAL_QUERY:-}" ] && [ -n "${CCFIND_REAL_SID:-}" ]; then
+    run env HOME="$REAL_HOME" "$CCASK_BIN" ${CCFIND_REAL_ACCOUNT:+-a "$CCFIND_REAL_ACCOUNT"} "$CCFIND_REAL_QUERY"
+    echo "$OUT" | sed 's/^/          /' | head -12
+    check "ccask BEST is ${CCFIND_REAL_SID:0:8}" 0 "~^BEST .*" "+$CCFIND_REAL_SID"
+  else
+    echo "  skip  set CCFIND_REAL_QUERY and CCFIND_REAL_SID to run one real ccask query"
+  fi
 fi
 
 # ---------------------------------------------------------------- fixtures
@@ -166,9 +179,9 @@ no_agent_env=(env -u CCFIND_AGENT); for v in "${AGENT_VARS[@]}"; do no_agent_env
 clip() { cat "$CLIP_LOG" 2>/dev/null; }
 
 slug() { sed 's/[^A-Za-z0-9]/-/g' <<<"$1"; }
-# mk <claude|second> <session-id> <launch-dir> <cwd> <title> <text>
+# mk <claude|second|third> <session-id> <launch-dir> <cwd> <title> <text>
 mk() {
-  local base=".claude"; [ "$1" = second ] && base=".claude-second"
+  local base=".claude"; [ "$1" != claude ] && base=".claude-$1"
   local d="$T/$base/projects/$(slug "$3")"; mkdir -p "$d" "$4"
   printf '{"type":"user","sessionId":"%s","cwd":"%s","timestamp":"2026-10-01T10:00:00Z","uuid":"%s-u1","message":{"role":"user","content":"%s"}}\n{"type":"ai-title","aiTitle":"%s","sessionId":"%s"}\n' \
     "$2" "$4" "$2" "$6" "$5" "$2" > "$d/$2.jsonl"
@@ -181,6 +194,9 @@ D=dddddddd-0000-4000-8000-000000000004
 FA=$(mk claude     $A "$T/work/alpha" "$T/work/alpha"     "Alpha zebrafinch" "zebrafinch invoice alpha")
 mk second $B "$T/work/beta"  "$T/work/beta/sub" "Beta quokka"      "quokka invoice beta" >/dev/null
 mk second $C "$T/work/gamma" "$T/work/gamma"    "Gamma marmoset"   "marmoset gamma --frobnicate" >/dev/null
+printf '#!/bin/sh\nexec claude "$@"\n' > "$T/.claude-second/mcp-launch.sh"; chmod +x "$T/.claude-second/mcp-launch.sh"
+F=ffffffff-0000-4000-8000-000000000006   # a third account with no launcher of its own
+mk third $F "$T/work/zeta" "$T/work/zeta" "Zeta ocelot" "ocelot zeta" >/dev/null
 E=eeeeeeee-0000-4000-8000-000000000005   # a cursor-agent session: no title or timestamp fields
 mkdir -p "$T/.cursor/projects/work-epsilon/agent-transcripts/$E"
 printf '{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\\narmadillo epsilon setup\\n</user_query>"}]}}\n' \
@@ -195,6 +211,13 @@ check "second session resumes via claude-second from its launch dir (not the sub
       0 "+cd $T/work/beta && claude-second --resume $B" "-$T/work/beta/sub &&"
 run ccfind -n invoice
 check "no account filter returns both accounts"  0 "+$A" "+$B"
+run ccfind -n ocelot
+check "an account without a launcher resumes through CLAUDE_CONFIG_DIR" \
+      0 "+cd $T/work/zeta && env CLAUDE_CONFIG_DIR=$T/.claude-third claude --resume $F"
+run ccfind -n -a third zeta
+check "-a <name> works for an account found on its own, and only that one" 0 "+$F" "-$A" "-$B"
+OUT="$(cat "$T/.config/ccfind/accounts.json" 2>&1)"; RC=0
+check "the accounts it found were saved for next time" 0 "+second" "+third" "-claude\""
 run ccfind -n -a claude invoice
 check "-a claude keeps only ~/.claude"           0 "+$A" "-$B"
 run ccfind -n -a SECOND invoice
@@ -259,6 +282,22 @@ check "the next plain search recovers" 0 "+$A"
 SCAN="$(dirname "$(readlink -f "$(command -v agent-fence)")")/nodelete-scan"
 run "$SCAN" "$CCFIND_BIN" "$CCASK_BIN" "$ASK/ccask-guard" "$HERE/test.sh"
 check "no delete calls in ccfind, ccask, guard, test.sh (ast-grep)" 0
+
+# ---------------------------------------------------------------- install.sh (skill scope)
+inst() { run env PREFIX="$T/inst-bin" sh -c 'cd "$1" && f=$2 && shift 2 && sh "$f" "$@"' _ "$REPO" "$INSTALL_SH" "$@"; }
+inst
+OUT="skill dirs: $(ls "$T/.claude/skills" "$T/.claude-second/skills" 2>&1 | tr '\n' ' ')"; RC=0
+check "install.sh alone installs no skill" 0 "+No such file"
+inst --skill
+check "--skill installs it for the user scope (~/.claude)" 0 "+installed skill: $T/.claude/skills/agsearch"
+OUT="second account has it: $(ls "$T/.claude-second/skills" 2>&1)"; RC=0
+check "and not into an account" 0 "+No such file"
+inst --account second
+check "--account NAME installs it under that account only" 0 "+installed skill: $T/.claude-second/skills/agsearch (account second)"
+inst --account nope
+check "an unknown account is an error and writes nothing" 2 "+no account folder"
+OUT="made: $(ls -d "$T/.claude-nope" 2>&1)"; RC=0
+check "no folder was made for it" 0 "+No such file"
 
 # ---------------------------------------------------------------- ccask (stub claude)
 run "$CCASK_BIN"
@@ -364,12 +403,12 @@ GUARD="$(dirname "$(readlink -f "$CCASK_BIN")")/ccask-guard"
 GC="$T/guard-count"
 g() {  # g <want-exit> <tool-call json> <label>
   : > "$GC"
-  OUT=$(printf '%s' "$2" | CCASK_GUARD_COUNT="$GC" CCASK_MAX_TOOLS=5 CCASK_DIR="$HERE" "$GUARD" 2>&1); RC=$?
+  OUT=$(printf "%s" "$2" | CCASK_ROOTS="$HOME/.claude/projects:$HOME/.claude-second/projects" CCASK_GUARD_COUNT="$GC" CCASK_MAX_TOOLS=5 CCASK_DIR="$HERE" "$GUARD" 2>&1); RC=$?
   check "guard: $3" "$1"
 }
 P="$HOME/.claude-second/projects"
 g 0 '{"tool_name":"Bash","tool_input":{"command":"ccfind -n \"gated invoice\""}}' "allows ccfind -n"
-g 0 '{"tool_name":"Bash","tool_input":{"command":"ccfind read 00000000"}}'          "allows ccfind read"
+g 0 '{"tool_name":"Bash","tool_input":{"command":"ccfind read aaaaaaaa"}}'          "allows ccfind read"
 g 2 '{"tool_name":"Bash","tool_input":{"command":"ls /tmp"}}'                       "blocks other commands"
 g 2 '{"tool_name":"Bash","tool_input":{"command":"ccfind -n x; touch y"}}'          "blocks ; chaining"
 g 2 '{"tool_name":"Bash","tool_input":{"command":"ccfind -n $(id)"}}'               "blocks \$( ) substitution"

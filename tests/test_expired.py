@@ -123,6 +123,18 @@ class ExpiredTests(unittest.TestCase):
         self.assertEqual([r[0] for r in rows], ["s1"])
         self.assertEqual([r[0] for r in self.ag._read_session_rows()], ["s1"])
 
+    def test_the_account_filter_still_matches_an_expired_session(self):
+        """-a goes by the transcript's path, and an expired session has none left."""
+        other = os.path.join(self.tmp.name, "other-account")
+        os.makedirs(other)
+        self.ag.ACCOUNTS = {"claude": self.projects, "other": other, "all": None}
+        lines = self.expire("s1", [("user", "webhook retry")])
+        scoped = lambda acct: [l.split(self.ag.SEP, 1)[0] for l in
+                               self.ag.apply_scope(lines, account=acct)]
+        self.assertEqual(scoped("claude"), ["s1"])
+        self.assertEqual(scoped("other"), [])
+        self.assertEqual(scoped("all"), ["s1"])
+
     def test_row_is_tagged_expired(self):
         lines = self.expire("s1", [("user", "webhook retry")])
         f = self.ag.build_sessions(lines)[0]

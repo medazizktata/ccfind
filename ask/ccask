@@ -10,7 +10,21 @@ TIME_LIMIT="${CCASK_TIMEOUT:-300}"      # seconds
 MODEL="${CCASK_MODEL:-haiku}"           # e.g. CCASK_MODEL=sonnet when haiku misjudges
 MAX_TOOLS="${CCASK_MAX_TOOLS:-15}"      # tool calls the agent may make, enforced by ccask-guard
 FENCE="${AGENT_FENCE:-agent-fence}"     # macOS sandbox wrapper: github.com/medazizktata/agent-fence
-ROOTS=("$HOME/.claude/projects" "$HOME/.claude-second/projects")
+# The accounts ccfind searches: `ccfind _accounts` prints "<name><TAB><config dir>" per account
+# (claude first) and an "ask" line with the dir ccask runs the agent under, if one is set.
+NAMES=(); ROOTS=(); ASK_DIR=""
+CCFIND_PY=$(readlink -f "$(command -v ccfind)" 2>/dev/null) || CCFIND_PY=""
+if [ -n "$CCFIND_PY" ]; then
+  while IFS=$'\t' read -r n d; do
+    case "$n" in
+      ask) ASK_DIR=$d ;;
+      claude) ROOTS+=("$d/projects") ;;
+      *) NAMES+=("$n"); ROOTS+=("$d/projects") ;;
+    esac
+  done < <(python3 -I "$CCFIND_PY" _accounts 2>/dev/null)
+fi
+[ ${#ROOTS[@]} -gt 0 ] || ROOTS=("$HOME/.claude/projects")
+ACCOUNT_WORDS=$(IFS='|'; echo "claude${NAMES[*]+|${NAMES[*]}}|all")   # claude|name|name|all
 
 die() { echo "ccask: $1" >&2; exit "${2:-1}"; }
 
@@ -64,7 +78,7 @@ sys.exit(bad)
 PY
 }
 
-USAGE='usage: ccask [-a claude|second|all] [--agent] [--copy|--no-copy] [--] "words or a phrase you remember"'
+USAGE="usage: ccask [-a $ACCOUNT_WORDS] [--agent] [--copy|--no-copy] [--] \"words or a phrase you remember\""
 
 # Same list as ccfind's AGENT_VARS (test.sh checks they agree). CCFIND_AGENT=1/0 overrides.
 AGENT_VARS=(CLAUDECODE AI_AGENT OPENCODE CURSOR_AGENT CODEX_SANDBOX)
@@ -79,13 +93,15 @@ main() {
   while [ $# -gt 0 ]; do
     case "$1" in
       -a|--account)
-        [ $# -ge 2 ] || die "-a needs one of: claude, second, all" 2
+        [ $# -ge 2 ] || die "-a needs one of: ${ACCOUNT_WORDS//|/, }" 2
         account=$(tr '[:upper:]' '[:lower:]' <<<"$2")
         case "$account" in
           claude|default) account=claude ;;
-          second) ;;
           all|global) account="" ;;
-          *) die "-a needs one of: claude, second, all (got '$2')" 2 ;;
+          *) case "|$ACCOUNT_WORDS|" in
+               *"|$account|"*) ;;
+               *) die "-a needs one of: ${ACCOUNT_WORDS//|/, } (got '$2')" 2 ;;
+             esac ;;
         esac
         shift 2 ;;
       -h|--help) echo "$USAGE"; exit 0 ;;
@@ -151,11 +167,14 @@ $cands"
   settings=$(jq -cn --arg g "$DIR/ccask-guard" \
     '{hooks: {PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $g}]}]}}')
   # Prompt goes on stdin: --allowedTools / --add-dir are variadic and would swallow it.
-  out=$(cd "$DIR" && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="$HOME/.claude-second" \
+  local protect=() r
+  for r in "${ROOTS[@]}"; do protect+=(--protect "$r"); done
+  out=$(cd "$DIR" && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="${ASK_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}" \
+    CCASK_ROOTS="$(IFS=:; echo "${ROOTS[*]}")" \
     CCFIND_EXCLUDE="${exclude#,}" CCASK_GUARD_COUNT="$counter" CCASK_MAX_TOOLS="$MAX_TOOLS" CCASK_DIR="$DIR" DISABLE_AUTOUPDATER=1 \
     gtimeout "$TIME_LIMIT" "$FENCE" --read-only ${hide[@]+"${hide[@]}"} \
       --allow-write "${XDG_CACHE_HOME:-$HOME/.cache}/ccfind" \
-      --protect "$HOME/.claude/projects" --protect "$HOME/.claude-second/projects" -- \
+      "${protect[@]}" -- \
     claude -p --model "$MODEL" --settings "$settings" \
       --system-prompt "$(cat "$DIR/ccask-system.md")" \
       --tools "Bash,Read,Grep,Glob" \

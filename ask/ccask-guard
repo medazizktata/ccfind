@@ -22,7 +22,9 @@ n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$count_file" || deny "cannot update the tool counter"
 [ "$n" -le "$max" ] || deny "tool limit ($max calls) reached. Stop searching and answer now with what you have."
 
-roots=("$HOME/.claude/projects" "$HOME/.claude-second/projects" "${CCASK_DIR:-/nonexistent}")
+# ccask passes every account's projects folder (colon-separated); without it, only ~/.claude's
+IFS=: read -r -a roots <<<"${CCASK_ROOTS:-$HOME/.claude/projects}"
+roots+=("${CCASK_DIR:-/nonexistent}")
 inside_roots() {   # realpath of $1 is one of the roots or below one
   local p r
   p=$(python3 -I -c 'import os,sys; print(os.path.realpath(os.path.expanduser(sys.argv[1])))' "$1") || return 1

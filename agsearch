@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ccfind: agsearch 0.2.0 (MIT, github.com/devcodes9/agsearch) patched by ~/Desktop/ccfind/patch_ccfind.py
-# to also search ~/.claude-second. Re-run the patch after upgrading agsearch.
+# to also search every ~/.claude-<name> account (see CONFIG_PATH). Re-run the patch after upgrading agsearch.
 """
 agsearch — global full-text search across all your coding agent sessions.
 
@@ -23,7 +23,7 @@ Usage:
     agsearch ask "..."             # optional AI fallback (Haiku agent, ~$0.003, at most $0.25; see ask/)
     agsearch --here "..."          # only sessions from the current directory's project
     agsearch --project myapp       # only sessions whose path matches 'myapp'
-    agsearch -a second "..."   # one Claude account: claude, second, all (default)
+    agsearch -a <account> "..."    # one Claude account: claude, a ~/.claude-<name>, all (default)
     agsearch -- "--resume"         # search for words that start with a dash
     agsearch --agent "..."         # agent mode: plain list, no clipboard, skips the caller's session
     agsearch -n --no-copy "..."    # -n copies the top resume line for humans; this stops it
@@ -67,9 +67,53 @@ import subprocess
 
 HOME = os.path.expanduser("~")
 PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
-# ccfind: also index the second config dir, resumed through its own launcher.
-SECOND_DIR = os.path.join(HOME, ".claude-second", "projects")
-SECOND_BIN = os.path.join(HOME, ".claude-second", "mcp-launch.sh")
+CONFIG_PATH = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")),
+                           "ccfind", "accounts.json")
+_RESERVED_ACCOUNTS = ("claude", "default", "all", "global")     # -a words that mean something
+
+
+def _find_accounts():
+    """Every ~/.claude-<name> that has a projects folder: {name: config dir}."""
+    found = {}
+    try:
+        names = sorted(os.listdir(HOME))
+    except OSError:
+        return found
+    for n in names:
+        name = n[len(".claude-"):].lower()
+        if (n.startswith(".claude-") and name and name not in _RESERVED_ACCOUNTS
+                and os.path.isdir(os.path.join(HOME, n, "projects"))):
+            found[name] = os.path.join(HOME, n)
+    return found
+
+
+def _load_accounts():
+    """(accounts, ask): the other Claude config directories ccfind searches as {name: dir}, and
+    the name whose account `ccfind ask` runs under (None: the one the environment selects).
+
+    Found once among ~/.claude-<name> and saved to CONFIG_PATH. Edit that file to drop an
+    account or to set "ask"; delete it to look again. `-a <name>` limits a search to one."""
+    try:
+        with open(CONFIG_PATH) as fh:
+            cfg = json.load(fh)
+        return ({str(n).lower(): os.path.join(HOME, d[2:]) if str(d).startswith("~/") else d
+                 for n, d in cfg["accounts"].items()
+                 if str(n).lower() not in _RESERVED_ACCOUNTS}, cfg.get("ask"))
+    except (OSError, ValueError, KeyError, AttributeError):
+        pass
+    accounts = _find_accounts()
+    try:
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        with open(CONFIG_PATH, "w") as fh:
+            json.dump({"accounts": {n: "~" + d[len(HOME):] for n, d in accounts.items()},
+                       "ask": None}, fh, indent=2)
+    except OSError:
+        pass
+    return accounts, None
+
+
+ACCOUNT_DIRS, ASK_ACCOUNT = _load_accounts()    # name -> config dir
+ACCOUNT_PROJECTS = {n: os.path.join(d, "projects") for n, d in ACCOUNT_DIRS.items()}
 CODEX_DIR = os.path.join(HOME, ".codex", "sessions")
 GEMINI_DIR = os.path.join(HOME, ".gemini", "tmp")
 CURSOR_DIR = os.path.join(HOME, ".cursor", "projects")
@@ -635,7 +679,7 @@ def _is_opencode_db(path):
 #   launch_dir  resume is scoped to the directory the session was started in
 SOURCES = {
     "cc": {
-        "roots": [PROJECTS_DIR, SECOND_DIR], "match": _is_jsonl, "parse": None,
+        "roots": [PROJECTS_DIR, *ACCOUNT_PROJECTS.values()], "match": _is_jsonl, "parse": None,
         "label": "claude", "colour": "34",
         "resume": ("id", ["claude", "--resume", "{sid}"]),
         "subagents": True, "launch_dir": True,
@@ -883,6 +927,7 @@ def _keep_expired(gone, live_frags, index, old_index, frags_current=True, today=
         with open(os.path.join(EXPIRED_DIR, fn), "w") as fh:
             fh.write("\n".join(slim))
         kept[fn] = {"source": source, "since": today.isoformat(), "fmt": EXPIRED_FMT,
+                    "was": path,    # where the transcript was: which account's it is (-a)
                     # a subagent's copy, so read can label its turns as the subagent's
                     "sub": _source(source)["subagents"]
                            and os.path.basename(path).startswith("agent-")}
@@ -900,6 +945,7 @@ def _keep_expired(gone, live_frags, index, old_index, frags_current=True, today=
             rows = [l for l in fh.read().splitlines() if l.split(SEP, 1)[0] not in live]
         for sid in dict.fromkeys(l.split(SEP, 1)[0] for l in rows):
             entry = index.setdefault(sid, {"source": kept[fn]["source"], "path": "",
+                                           "was": kept[fn].get("was", ""),
                                            "expired": kept[fn]["since"], "frags": []})
             entry["frags"].append([fn, bool(kept[fn].get("sub"))])
         lines.extend(rows)
@@ -1183,7 +1229,7 @@ def run_by_agent():
     return any(os.environ.get(v) for v in AGENT_VARS)
 
 
-ACCOUNTS = {"claude": PROJECTS_DIR, "default": PROJECTS_DIR, "second": SECOND_DIR,
+ACCOUNTS = {"claude": PROJECTS_DIR, "default": PROJECTS_DIR, **ACCOUNT_PROJECTS,
             "all": None, "global": None}
 
 
@@ -1197,7 +1243,7 @@ def apply_scope(lines, here=False, project=None, account=None):
             index = {}
         real = os.path.realpath(root) + os.sep
         keep = {s for s, i in index.items()
-                if os.path.realpath(i.get("path", "")).startswith(real)}
+                if os.path.realpath(i.get("path") or i.get("was") or "/nonexistent").startswith(real)}
         lines = [l for l in lines if l.split(SEP, 1)[0] in keep]
     if here:
         cwd = os.getcwd()
@@ -1383,7 +1429,7 @@ def resolve_sid(sid):
 
 
 def _session_path(sid):
-    for base in (PROJECTS_DIR, SECOND_DIR):
+    for base in (PROJECTS_DIR, *ACCOUNT_PROJECTS.values()):
         for root, _dirs, files in os.walk(base):
             if sid + ".jsonl" in files:
                 return os.path.join(root, sid + ".jsonl")
@@ -1902,8 +1948,8 @@ def resume_plan(sid, cwd):
     kind, template = rec["resume"]
     handle = info.get("path", "") if kind == "path" else sid
     argv = [a.replace("{sid}", sid).replace("{path}", handle) for a in template]
-    if source == "cc" and info.get("path", "").startswith(SECOND_DIR + os.sep):
-        argv[0] = SECOND_BIN
+    if source == "cc":
+        argv[:1] = _account_launch(info.get("path", "")) or argv[:1]
     bin_ = argv[0]
 
     # Claude looks for the session in the project of whatever directory it starts in, so resume
@@ -1918,9 +1964,27 @@ def resume_plan(sid, cwd):
     return source, bin_, argv, cwd, target, cwd_exists
 
 
+def _account_launchers(name):
+    """Programs that start Claude under account `name`: its mcp-launch.sh, or a claude-<name>."""
+    cands = (os.path.join(ACCOUNT_DIRS[name], "mcp-launch.sh"), shutil.which("claude-" + name))
+    return [c for c in cands if c and os.access(c, os.X_OK)]
+
+
+def _account_launch(path):
+    """The argv start for Claude under the account whose projects hold `path`; None for ~/.claude."""
+    for name, root in ACCOUNT_PROJECTS.items():
+        if path.startswith(root + os.sep):
+            found = _account_launchers(name)
+            return found[:1] or ["env", "CLAUDE_CONFIG_DIR=" + ACCOUNT_DIRS[name], "claude"]
+    return None
+
+
 def resume_command(target, argv):
     """A shell line you can paste. Worktree paths contain spaces often enough to quote."""
-    cmd = " ".join(argv).replace(SECOND_BIN, "claude-second")
+    cmd = " ".join(argv)
+    for name in ACCOUNT_DIRS:               # show the launcher by the name you type, claude-<name>
+        for path in _account_launchers(name):
+            cmd = cmd.replace(path, "claude-" + name)
     return f"cd {shlex.quote(target)} && {cmd}" if target else cmd
 
 
@@ -2510,6 +2574,12 @@ def main(argv):
     if argv and argv[0] == "_filter":
         cmd_filter(argv[1:])
         return 0
+    if argv and argv[0] == "_accounts":      # for ccask: the accounts and which one it runs under
+        print("claude\t" + os.path.dirname(PROJECTS_DIR))
+        for n, d in ACCOUNT_DIRS.items():
+            print(f"{n}\t{d}")
+        print("ask\t" + ACCOUNT_DIRS.get(ASK_ACCOUNT or "", ""))
+        return 0
     if argv and argv[0] == "_transcript":    # fzf ctrl-o, piped to a pager: keep the colour
         render_transcript(argv[1] if len(argv) > 1 else "",
                           argv[2] if len(argv) > 2 else "0", " ".join(argv[3:]), color=True)
@@ -2561,15 +2631,16 @@ def main(argv):
         elif a in ("-p", "--project"):
             i += 1
             if i >= len(argv) or not argv[i].strip():
-                print("ccfind: -p needs a folder name, e.g. -p Second", file=sys.stderr)
+                print("ccfind: -p needs a folder name, e.g. -p myproject", file=sys.stderr)
                 return 2
             project = argv[i]
         elif a in ("-a", "--account"):
             i += 1
             account = argv[i].strip().lower() if i < len(argv) else ""
             if account not in ACCOUNTS:
-                print("ccfind: -a needs one of: claude (~/.claude), second "
-                      "(~/.claude-second), all", file=sys.stderr)
+                print("ccfind: -a needs one of: claude (~/.claude), "
+                      + "".join(f"{n} (~/.claude-{n}), " for n in ACCOUNT_DIRS) + "all",
+                      file=sys.stderr)
                 return 2
         elif a == "--":                  # everything after is query, even if it starts with -
             query_parts.extend(argv[i + 1:])

@@ -15,11 +15,28 @@ ccfind read <id>               print a session without reopening it
 ccfind ask "…"                 AI fallback when your words don't match (costs money, see below)
 ```
 
-Covers Claude Code (`~/.claude`, plus a second config directory if you keep one), Codex, Cursor
-CLI, opencode and Gemini CLI. New sessions are picked up on every search.
+Covers Claude Code (`~/.claude` and any other account folder, see Accounts), Codex, Cursor CLI,
+opencode and Gemini CLI. New sessions are picked up on every search.
 
 **Tips:** use rare words (names, file names, error text), look at the top 3–5, and skip `-p`
 unless you know where the session was started.
+
+## Accounts
+
+ccfind searches `~/.claude` and every other `~/.claude-<name>` folder that has a `projects/`
+folder, one per Claude account. It finds them on the first run and saves the list in
+`~/.config/ccfind/accounts.json`: edit that file to drop one, or to set `"ask"`, the account
+`ccfind ask` runs under and bills; delete it to look again. `ccfind -a <name>` limits a search to
+one account, and `-a claude` means `~/.claude`. A session from account `<name>` resumes with
+`claude-<name>`.
+
+## Install
+
+```
+sh install.sh                     ccfind only, in ~/.local/bin
+sh install.sh --skill             also the Claude Code skill, globally (user scope, ~/.claude)
+sh install.sh --account NAME      also the skill, under one account only (~/.claude-NAME)
+```
 
 ## The suite: one job per part
 
@@ -39,11 +56,11 @@ your clipboard is left alone, and the agent's own session is left out of the res
 ## Fork of agsearch
 
 A fork of [devcodes9/agsearch](https://github.com/devcodes9/agsearch) (MIT, by Dev Dalia),
-branch `ccfind` = v0.2.0 plus our commits. Upstream's README is in `docs/UPSTREAM-README.md`.
+branch `ccfind` = upstream plus our commits. Upstream's README is in `docs/UPSTREAM-README.md`.
 What changed, and how to take upstream updates: `AGENTS.md`.
 
 ## Tests
-    uvx pytest -q tests               upstream's suite (182), adapted where our output differs
-    ./harness/test.sh                 76 end-to-end checks, free (stub claude, fake HOME)
+    uvx pytest -q tests               upstream's suite plus ours, adapted where our output differs
+    ./harness/test.sh                 end-to-end checks, free (stub claude, fake HOME)
     ./harness/test.sh --calibrate     proves the checks can fail
-    ./harness/test.sh --real|--live   + real transcripts (free) | + one paid Haiku run
+    ./harness/test.sh --real|--live   + your transcripts (free, set CCFIND_REAL_QUERY/_SID) | + one paid Haiku run

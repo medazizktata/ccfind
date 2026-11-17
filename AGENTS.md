@@ -11,12 +11,14 @@ How an agent should use and maintain `ccfind`. Usage for people is in `README.md
    (BM25, stemming, typo fallback), not semantic.
 4. Confirm with `ccfind read <id-prefix>`, which prints a session without resuming it.
 5. Give the user the line printed under the result. It is already correct:
-   `cd <launch dir> && claude --resume <id>`, or `claude-second --resume <id>` for
-   sessions under `~/.claude-second`.
+   `cd <launch dir> && claude --resume <id>`, or `claude-<name> --resume <id>` for
+   sessions under another account's folder `~/.claude-<name>`.
 
 `ccfind -p <path-substring> "<words>"` limits the search to matching project paths.
-`ccfind -a claude|second|all` limits it to one Claude account's transcripts. The default
-is all. Unknown options, `-a` with a bad value and `-p` with no value exit 2 rather than being
+`ccfind -a claude|<name>|all` limits it to one Claude account's transcripts (`<name>` is a
+folder `~/.claude-<name>` that has a `projects/` folder). The default is all. The accounts are
+found on the first run and saved in `~/.config/ccfind/accounts.json`: edit that file to drop one,
+delete it to look again. Unknown options, `-a` with a bad value and `-p` with no value exit 2 rather than being
 searched for as words. Use `--` before a query that starts with a dash.
 
 ## Agent mode and the clipboard
@@ -40,7 +42,7 @@ claude, opencode and cursor-agent; `CODEX_SANDBOX` is unverified because codex c
 There is no daemon, file watcher or hook. Each `ccfind` run (search box or `-n`) calls
 `build_index()` once before searching:
 
-1. It walks `~/.claude/projects` and `~/.claude-second/projects` (`SOURCES["cc"]["roots"]`)
+1. It walks `~/.claude/projects` and every saved account's `projects` folder (`SOURCES["cc"]["roots"]`)
    and stats every `.jsonl`, subagent transcripts included.
 2. It compares each mtime with `~/.cache/ccfind/meta.json`:
    - unchanged: reuse the cached fragment in `~/.cache/ccfind/frag/` without reading it
@@ -76,7 +78,9 @@ plus our commits (`git log --oneline v0.2.0..ccfind`); remote `upstream` is the 
   because nothing here is deleted.
 
 What the fork changes (`git log v0.2.0..ccfind` lists the commits):
-- index `~/.claude-second/projects` too, and resume those sessions with `claude-second`
+- index every `~/.claude-<name>/projects` too (found once, saved in `~/.config/ccfind/accounts.json`),
+  and resume those sessions with `claude-<name>` (its `mcp-launch.sh`, a `claude-<name>` on PATH, or
+  `env CLAUDE_CONFIG_DIR=... claude` when neither exists)
 - `-a/--account`, `--`, errors for unknown options and missing values
 - a cd/resume line under each `-n` result; humans get the top one copied
 - agent mode (see above); cache dir `~/.cache/ccfind`
@@ -101,7 +105,7 @@ commit that keeps each test's intent. Do the same for new ones.
 Verified by running it:
 - A new transcript, an appended line and a moved-away transcript each show up correctly on
   the next search (tested in a throwaway `HOME`).
-- Resume lines route correctly: unpatched agsearch sends second sessions to plain
+- Resume lines route correctly: unpatched agsearch sends another account's sessions to plain
   `claude`, which cannot open them.
 - A message `cwd` in a subdirectory resolves back to the launch dir.
 
@@ -116,8 +120,9 @@ shorter setting would make old sessions unsearchable.
 ## ccask (AI fallback)
 
 `ccask "<words>"` runs `ccfind -n`, then hands the candidates to `claude -p --model haiku`
-with `ccask-system.md` as the system prompt. It runs under `~/.claude-second`, so it uses
-that account.
+with `ccask-system.md` as the system prompt. It runs under the account named by `"ask"` in
+`~/.config/ccfind/accounts.json`, else the one the environment already selects
+(`CLAUDE_CONFIG_DIR`, default `~/.claude`), and bills that account.
 
 Guard rails, enforced outside the model (three layers):
 - `ccask-guard`, a PreToolUse hook passed with `--settings`, runs before every tool call:
@@ -134,7 +139,7 @@ Guard rails, enforced outside the model (three layers):
   (`ccask.sb` is retired). It adds `--allow-write ~/.cache/ccfind` and `--protect` for both
   transcript folders.
 - Former `ccask.sb` rules, now done by agent-fence: Writes (and so deletes and
-  moves) are allowed only in ~/.claude-second, ~/.cache/ccfind, $TMPDIR,
+  moves) are allowed only in the ask account's config folder, ~/.cache/ccfind, $TMPDIR,
   ~/Library/Caches, /private/tmp/claude-<uid> and bash here-doc files. Both transcript
   folders are write-protected even inside those. Reads and network stay open (claude needs
   the API).
@@ -146,7 +151,7 @@ Guard rails, enforced outside the model (three layers):
 - If the schema'd answer is missing, ccask accepts JSON written as text, then a
   `best_id: <id>` in prose. Either way the id is validated and the resume line is built by
   the script.
-- `-a claude|second|all` is passed to the first ccfind call and to the model, and any
+- `-a claude|<name>|all` is passed to the first ccfind call and to the model, and any
   returned id outside that account is rejected.
 - Tools are `ccfind -n`, `ccfind read`, Read, Grep and Glob only. A test `ls /tmp` was denied.
 - No MCP servers, no user settings, plugins or hooks, and no saved session, so its runs never
@@ -161,7 +166,7 @@ Guard rails, enforced outside the model (three layers):
 Do not read `sessions.tsv` for lookups. It holds only the last search's rows, narrowed by
 `-p`. This broke the first resolver.
 
-Measured on 2026-10-17, query "second website invoice page addition", known answer `00000000`:
+Measured on 2026-10-17, one query about an invoice page, with one known session as the answer:
 
 | run | answer | turns | cost |
 |---|---|---|---|
@@ -169,8 +174,8 @@ Measured on 2026-10-17, query "second website invoice page addition", known answ
 | 2 | correct BEST | 12 | $0.14 |
 | 3 | wrong BEST; the right one under ALSO | 24 | $0.19 |
 
-| 4 | `-a second`: no structured answer, fallback ranking shown (cost not printed then) | ? | ? |
-| 5 | `-a second`: timed out at 300s, nothing returned | ? | ? |
+| 4 | `-a <account>`: no structured answer, fallback ranking shown (cost not printed then) | ? | ? |
+| 5 | `-a <account>`: timed out at 300s, nothing returned | ? | ? |
 
 Plain `ccfind -n` had it 3rd for free in ~10s. Untested: `CCASK_MODEL=sonnet`. The cause of
 run 4 is unknown. `.ccask-last-output.json` now keeps the raw response for next time (a
@@ -197,7 +202,8 @@ Run `./harness/test.sh` and `uvx pytest -q tests` after every change; both must 
   found the calling session with Grep and cited it (2 of 12 benchmark runs, 2026-10-20).
   The open-sandbox run writes `harness/.sbprobe` (2 bytes). That file is expected
   and gets overwritten each time.
-- `--real`: free checks on real transcripts (gated invoice page → 00000000 in the top 3).
+- `--real`: free checks on your own transcripts. Set `CCFIND_REAL_QUERY` and `CCFIND_REAL_SID`
+  (and `CCFIND_REAL_ACCOUNT` for a session outside `~/.claude`); the session must be in the top 3.
 - `--live`: one paid Haiku run. It is a quality check and currently fails.
 - Fixture paths must be normalised. `$TMPDIR`'s trailing `/` once produced `//`, which broke
   slug matching in the fixtures only.

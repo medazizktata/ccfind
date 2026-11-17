@@ -7,7 +7,32 @@
 #   AGSEARCH_VERSION=v0.1.0 sh install.sh    # a specific release
 #   AGSEARCH_VERSION=main   sh install.sh    # unreleased tip, for testing
 #   PREFIX=/usr/local/bin   sh install.sh    # a different install location
+#
+# Also install the Claude Code skill (so Claude can search past sessions for you):
+#   sh install.sh --skill                    # globally: user scope, ~/.claude/skills
+#   sh install.sh --account NAME             # under one account only: ~/.claude-NAME/skills
+#   curl -fsSL <url> | sh -s -- --skill      # the same, from a pipe
 set -eu
+
+SKILL=0 ACCOUNT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --skill) SKILL=1 ;;
+    --account)
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "error: --account needs a name (the NAME of ~/.claude-NAME)" >&2; exit 2; }
+      ACCOUNT="$2"; SKILL=1; shift ;;
+    *) echo "usage: sh install.sh [--skill] [--account NAME]" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# User scope is ~/.claude; an account is the ~/.claude-NAME folder ccfind also searches.
+if [ -n "$ACCOUNT" ]; then
+  CONFIG_DIR="$HOME/.claude-$ACCOUNT"
+  [ -d "$CONFIG_DIR" ] || { echo "error: no account folder $CONFIG_DIR" >&2; exit 2; }
+else
+  CONFIG_DIR="$HOME/.claude"
+fi
 
 REPO="devcodes9/agsearch"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
@@ -70,6 +95,18 @@ case ":$PATH:" in
   *) echo "note: $PREFIX is not on your PATH — add it to your shell profile:"
      echo "      export PATH=\"$PREFIX:\$PATH\"" ;;
 esac
+
+if [ "$SKILL" = 1 ]; then
+  SKILL_DIR="$CONFIG_DIR/skills/agsearch"
+  mkdir -p "$SKILL_DIR"
+  if [ -f "./skills/agsearch/SKILL.md" ] && [ -z "${AGSEARCH_VERSION:-}" ]; then
+    cp "./skills/agsearch/SKILL.md" "$SKILL_DIR/SKILL.md"
+  else
+    curl -fsSL "https://raw.githubusercontent.com/$REPO/${AGSEARCH_VERSION:-main}/skills/agsearch/SKILL.md" \
+      -o "$SKILL_DIR/SKILL.md" || { echo "error: could not download the skill" >&2; exit 1; }
+  fi
+  echo "installed skill: $SKILL_DIR${ACCOUNT:+ (account $ACCOUNT)}"
+fi
 
 if ! command -v fzf >/dev/null 2>&1; then
   echo "note: fzf is not installed — the interactive TUI needs it."

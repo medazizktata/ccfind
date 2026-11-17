@@ -19,6 +19,17 @@ migration in the same line.
   replies, each cut to 2,000 characters, with no tool output and no automation runs. The
   rows are marked `expired`, Enter and `agsearch read` open them read-only, and ctrl-y copies
   the read command, since there is nothing left to resume.
+- **Other Claude accounts are found, not hard-coded.** Every `~/.claude-<name>` folder with a
+  `projects/` folder is searched; the list is found on the first run and saved in
+  `~/.config/ccfind/accounts.json` (edit it to drop an account or to set `"ask"`, the account
+  `ccfind ask` runs under; delete it to look again). `-a <name>` limits a search to one
+  account, and a session resumes with `claude-<name>`: its `mcp-launch.sh`, a `claude-<name>`
+  on PATH, or `env CLAUDE_CONFIG_DIR=... claude`. Migration: a machine that used the former
+  second account gets it found on the next search and every other `~/.claude-*` account with a
+  `projects/` folder is now searched too; `ccfind ask` runs under the environment's account
+  unless `"ask"` is set.
+- **`install.sh --skill` and `--account NAME`** install the Claude Code skill globally (user
+  scope, `~/.claude`) or under one account (`~/.claude-NAME`).
 
 ### Changed
 
@@ -32,6 +43,9 @@ migration in the same line.
 
 ### Fixed
 
+- **`-a <account>` finds an expired session.** An expired session has no transcript path, so
+  the account filter never matched it; the path it was saved from is now kept with it.
+  Sessions expired by an earlier build have none recorded and still do not match `-a`.
 - **`agsearch read` no longer crashes on superscript digits.** A message containing `¹` or
   `²` raised `ValueError` while condensing line numbers, because `isdigit()` accepts
   characters `int()` cannot parse.

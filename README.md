@@ -1,7 +1,7 @@
 # ccfind — find any past agent session and get the command to reopen it
 
-**For:** one person running many agent sessions across many folders and two Claude accounts,
-who no longer remembers where a session was started.
+**For:** one person running many agent sessions across many folders and more than one Claude
+config directory, who no longer remembers where a session was started.
 **Job:** type what you remember and get the session plus a paste-ready
 `cd <folder> && <tool> --resume <id>`, in about 10 seconds, free and offline.
 **Not:** semantic search, a transcript backup, a team or cloud tool.
@@ -9,14 +9,14 @@ who no longer remembers where a session was started.
 ```
 ccfind                         search box: type, Enter resumes, Ctrl-Y copies cd + resume
 ccfind -n "gated invoice"      ranked list with a resume line under each; the top one is copied
-ccfind -a second "…"       one Claude account (claude, second, all = default)
-ccfind -p Second "…"       only sessions started in folders whose path contains Second
+ccfind -a <account> "…"        one Claude config directory only (default: all of them)
+ccfind -p <folder> "…"         only sessions started in folders whose path contains <folder>
 ccfind read <id>               print a session without reopening it
 ccfind ask "…"                 AI fallback when your words don't match (costs money, see below)
 ```
 
-Covers Claude Code (`~/.claude` and `~/.claude-second`), Codex, Cursor CLI, opencode and
-Gemini CLI. New sessions are picked up on every search.
+Covers Claude Code (`~/.claude`, plus a second config directory if you keep one), Codex, Cursor
+CLI, opencode and Gemini CLI. New sessions are picked up on every search.
 
 **Tips:** use rare words (names, file names, error text), look at the top 3–5, and skip `-p`
 unless you know where the session was started.

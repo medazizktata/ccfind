@@ -104,8 +104,8 @@ Warm, unscoped: `invoice` 2.14 s, `sandbox` 1.90, `fork` 2.03, `agent fence` 2.6
 typo tier, which ranks slowest). So "about 2 s" is typical and the range is 1.5 to 3.4 s.
 
 Scoped searches iterate every row to apply the filter, and do not reuse the session cache:
-`-a second` 5.30 s (the account holds about half the sessions, so they are all
-regrouped), `-p Second` 1.93 s and `--here` 1.69 s (few sessions survive the filter).
+`-a <account>` 5.30 s (that account holds about half the sessions, so they are all
+regrouped), `-p <folder>` 1.93 s and `--here` 1.69 s (few sessions survive the filter).
 The first unscoped search after any scoped one rebuilds the session rows once: 7.51 s, then
 1.75 s again.
 

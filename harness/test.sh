@@ -59,9 +59,10 @@ if [ $CALIBRATE = 1 ]; then
     "$CCFIND_BIN" > "$C/ccfind-no-delta-reader"
   sed 's/^        if fresh and clean and sum(map(len, delta)) <= DELTA_MAX:$/        if False:  # sabotaged/' \
     "$CCFIND_BIN" > "$C/ccfind-no-delta-writer"
-  sed -e 's/^    return \[by_sid\[sid\] for sid in sorted(sigs, key=.*$/    return list(by_sid.values())  # sabotaged/' \
-      -e '/^            if sid in by_sid\]$/d' "$CCFIND_BIN" > "$C/ccfind-keeps-vanished"
-  chmod +x "$C/ccfind-no-delta-reader" "$C/ccfind-no-delta-writer" "$C/ccfind-keeps-vanished"
+  sed 's/^    expired = _keep_expired(.*$/    expired = []  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-forgets-expired"
+  sed 's/^            if entry.get("expired"):$/            if False:  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-no-expired-sig"
+  chmod +x "$C/ccfind-no-delta-reader" "$C/ccfind-no-delta-writer" "$C/ccfind-forgets-expired" \
+           "$C/ccfind-no-expired-sig"
   for d in ask ask-openguard ask-opensb; do
     mkdir -p "$C/$d"; cp "$ASK/ccask-system.md" "$ASK/ccask-guard" "$CCASK_BIN" "$C/$d/"
   done
@@ -82,7 +83,8 @@ if [ $CALIBRATE = 1 ]; then
               "ccfind that ignores CCFIND_EXCLUDE|CCFIND_BIN=$C/ccfind-no-exclude" \
               "ccfind whose reader ignores sessions.tsv.delta|CCFIND_BIN=$C/ccfind-no-delta-reader" \
               "ccfind that rewrites sessions.tsv instead of the delta|CCFIND_BIN=$C/ccfind-no-delta-writer" \
-              "ccfind that lists sessions whose transcript is gone|CCFIND_BIN=$C/ccfind-keeps-vanished" \
+              "ccfind that forgets a session when its transcript is gone|CCFIND_BIN=$C/ccfind-forgets-expired" \
+              "ccfind that gives expired sessions no signature|CCFIND_BIN=$C/ccfind-no-expired-sig" \
               "ccask that accepts invented ids|CCASK_BIN=$C/ask/ccask" \
               "guard that allows every tool call|CCASK_BIN=$C/ask-openguard/ccask" \
               "ccask that leaks the caller's session to its agent|CCASK_BIN=$C/ask-noexclude/ccask" \
@@ -228,22 +230,24 @@ check "a new transcript is found on the next search" 0 "+$D"
 frags_before=$(ls "$XDG_CACHE_HOME/ccfind/frag" | wc -l)
 mkdir -p "$T/moved"; mv "$FD" "$T/moved/"
 run ccfind -n okapi
-check "a transcript moved away drops out of results" 1 "-$D"
+check "a transcript moved away stays searchable, marked expired" 0 "+$D" "+expired"
 OUT="cached copies: before=$frags_before after=$(ls "$XDG_CACHE_HOME/ccfind/frag" | wc -l)"; RC=0
 check "stale cached copy is left in place (no deletes)" 0 "~before= *([0-9]+) after= *\\1$"
 
-# A session that sits in sessions.tsv itself: gone from results when its transcript goes, back when it returns
+# A session that sits in sessions.tsv itself: kept as expired when its transcript goes, live again when it returns
 FC="$T/.claude-second/projects/$(slug "$T/work/gamma")/$C.jsonl"
 mv "$FC" "$T/moved/"
 run ccfind -n marmoset
-check "a session stored in sessions.tsv drops out when its transcript is moved away" 1 "-$C"
+check "a session stored in sessions.tsv stays listed, marked expired, when its transcript is moved away" 0 "+$C" "+expired"
 run python3 "$CCFIND_BIN" _filter 0 marmoset
-check "and the fzf reload target stops listing it" 0 "-$C"
+check "and the fzf reload target lists it as expired" 0 "+$C" "+expired"
+OUT="expired signatures: $(grep -o 'expired:' "$CF/sessions.sig.json" | wc -l | tr -d ' ')"; RC=0
+check "the session cache holds a signature for it (else it is regrouped on every search)" 0 "~signatures: [1-9]"
 mv "$T/moved/$C.jsonl" "$FC"
 run ccfind -n marmoset
-check "it comes back with its transcript" 0 "+$C"
+check "it comes back live with its transcript" 0 "+$C" "-expired"
 run python3 "$CCFIND_BIN" _filter 0 marmoset
-check "and the fzf reload target lists it again" 0 "+$C"
+check "and the fzf reload target lists it live again" 0 "+$C" "-expired"
 # A scoped search empties the cache's signatures and the delta; the next plain search recovers
 run ccfind -n -a claude pangolin
 OUT="delta bytes: $(wc -c < "$CF/sessions.tsv.delta" | tr -d ' '), signatures: $(cat "$CF/sessions.sig.json")"; RC=0

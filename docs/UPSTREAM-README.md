@@ -7,7 +7,7 @@
 
 <p align="center">
   Ranked full-text search across the coding-agent sessions already on your machine.<br>
-  <strong>Claude Code</strong>, <strong>Codex</strong>, <strong>Cursor</strong>, <strong>opencode</strong> and <strong>Gemini CLI</strong>.
+  <strong>Claude Code</strong>, <strong>Codex</strong>, <strong>Cursor CLI</strong>, <strong>opencode</strong> and <strong>Gemini CLI</strong>.
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@ agsearch indexes the local transcripts your coding agents already write. Search 
 ranked list, preview the matching lines, and resume the original session in the tool it came
 from. Everything stays on your machine.
 
-<p align="center"><img src="https://raw.githubusercontent.com/devcodes9/agsearch/main/docs/demo.gif" alt="Searching 52 sessions; the second query is misspelled and still lands on the right one" width="100%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/devcodes9/agsearch/main/docs/demo.gif" alt="Searching 53 sessions across five coding agents; the second query is misspelled and still lands on the right one" width="100%"></p>
 
 ## Quick start
 
@@ -37,6 +37,16 @@ To run one search without installing anything:
 ```sh
 uvx agsearch -n "stripe tax id"
 ```
+
+And inside Claude Code, so Claude searches your past sessions itself rather than telling you
+it has no record of them:
+
+```
+/plugin marketplace add devcodes9/agsearch
+/plugin install agsearch@agsearch
+```
+
+[What that changes](#let-claude-search-for-you).
 
 ## Features
 
@@ -86,6 +96,21 @@ This installs the latest release to `~/.local/bin`. Set `PREFIX` to change the d
 `AGSEARCH_VERSION` to pin a release.
 
 agsearch requires Python 3.9 or newer and has no Python package dependencies.
+
+### Updating
+
+```sh
+brew update && brew upgrade agsearch   # Homebrew
+uv tool upgrade agsearch               # uv
+pipx upgrade agsearch                  # pipx
+pip install -U agsearch                # pip
+```
+
+Re-run `install.sh` to update an install-script copy; it overwrites in place. `/plugin` updates
+the Claude Code skill.
+
+The first search after an update can rebuild the index, which takes a few seconds on a large
+corpus. That happens when a release changes how transcripts are parsed, and only once.
 
 ## Usage
 
@@ -207,8 +232,13 @@ Its cache lives under `~/.cache/agsearch/`. Transcript parsing and ranking happe
 only changed files are reparsed.
 
 > [!IMPORTANT]
-> Claude Code deletes transcripts after 30 days by default. To keep a longer searchable history,
-> set `cleanupPeriodDays` in `~/.claude/settings.json`:
+> Claude Code deletes transcripts after 30 days by default. When a transcript disappears,
+> agsearch keeps what it had indexed for 180 days: your messages and the agent's replies, each
+> cut to 2,000 characters, without tool output. Those sessions are marked `expired`. They are
+> still searchable and readable, and Enter opens them to read, but they cannot be resumed.
+>
+> To keep sessions resumable for longer, raise `cleanupPeriodDays` in `~/.claude/settings.json`
+> (heavy daily use writes about 700 MB of transcripts a month):
 >
 > ```json
 > { "cleanupPeriodDays": 365 }
@@ -223,6 +253,7 @@ only changed files are reparsed.
 - Sessions from deleted worktrees resume from the nearest existing parent directory.
 - Recently active sessions are marked `●` and require confirmation before reattaching.
 - Forked Claude Code sessions are marked `fork`, and name the branch they split from.
+- Sessions whose transcript was deleted are marked `expired` and open read-only.
 
 ## Development
 

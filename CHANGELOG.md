@@ -18,6 +18,8 @@ migration in the same line.
   when the changed rows pass 16 MB. `-n` prints its results before it writes the cache.
   Migration: none; the first search after upgrading regroups every session once from the
   cached fragments, because the session format number changed (it is part of each signature).
+  Every cache row now ends in a newline and a reader drops a last line without one, so a file
+  read while another search is writing it never yields a row with a shortened blob.
 
 ### Fixed
 

@@ -50,11 +50,16 @@ Not verified:
 
 - No idle-machine timing; every number above was taken at load 9 to 30.
 - Not run against the real `~/.cache/ccfind`, only throwaway caches. The format number
-  changed (`SESS_FMT` 1 to 2), so the first real search regroups every session once from the
+  changed (`SESS_FMT` 1 to 3), so the first real search regroups every session once from the
   cached fragments (the earlier measurement for a full regroup was about 7 s).
 - A reader that starts while a build is writing the delta can see a torn delta (written in
   place). The signatures are emptied first, so a reader that checks them first ignores the
-  delta; one that read them just before is not covered. Not tested.
+  delta; one that read them just before (a second concurrent writer) is not covered by that.
+  Measured afterwards: a cut file read back with a shortened last blob, because the blob is
+  the last column and the row still had 8 columns. Fixed: rows end in "\n" (`SESS_FMT` 3) and
+  the reader drops an unterminated last line; three unit tests, each red when the reader or
+  either writer is reverted. The two-writer race itself was not reproduced; a reader in it
+  now sees the older complete row instead of a cut one.
 - An older build pointed at a newer cache is protected only by the `SESS_FMT` bump (its
   signatures no longer match, so it regroups everything and rewrites `sessions.tsv`). Reasoned
   from the code, not run.

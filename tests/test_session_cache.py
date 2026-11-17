@@ -127,6 +127,34 @@ class DeltaTests(unittest.TestCase):
         self.assertEqual([r[0] for r in rows], ["c", "a", "b"])
         self.assertEqual([r[0] for r in ag._read_session_rows()], ["c", "a", "b"])
 
+    def _cut(self, path, keep):
+        """What a reader sees while a writer is mid-row: the file ends `keep` bytes short."""
+        text = open(path).read()
+        with open(path, "w") as fh:
+            fh.write(text[:len(text) - keep])
+
+    def test_a_delta_cut_inside_its_blob_is_not_read_as_a_shorter_row(self):
+        """The blob is the last column: a cut row still has 8 columns and used to pass."""
+        self._build()
+        self._change("b", "beta rewritten " + "tail " * 50)
+        self._build()
+        self._cut(ag.SESSIONS_PATH + ".delta", 40)
+        self.assertEqual(self._delta_sids(), set())
+        self.assertNotIn("rewritten", {r[0]: r for r in ag._read_session_rows()}["b"][ag.C_BLOB])
+
+    def test_a_delta_cut_after_its_first_row_keeps_that_row(self):
+        self._build()
+        self._change("a", "alpha rewritten")
+        self._change("b", "beta rewritten " + "tail " * 50)
+        self._build()
+        self._cut(ag.SESSIONS_PATH + ".delta", 40)
+        self.assertEqual(len(self._delta_sids()), 1)
+
+    def test_sessions_tsv_cut_inside_its_last_blob_drops_that_row(self):
+        self._build()
+        self._cut(ag.SESSIONS_PATH, 5)
+        self.assertEqual(len(ag._read_rows(ag.SESSIONS_PATH)), 2)
+
     def test_the_cached_rows_equal_a_full_rebuild(self):
         self._build()
         self._change("c", "gamma rewritten")

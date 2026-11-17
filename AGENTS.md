@@ -17,8 +17,10 @@ How an agent should use and maintain `ccfind`. Usage for people is in `README.md
 `ccfind -p <path-substring> "<words>"` limits the search to matching project paths.
 `ccfind -a claude|<name>|all` limits it to one Claude account's transcripts (`<name>` is a
 folder `~/.claude-<name>` that has a `projects/` folder). The default is all. The accounts are
-found on the first run and saved in `~/.config/ccfind/accounts.json`: edit that file to drop one,
-delete it to look again. Unknown options, `-a` with a bad value and `-p` with no value exit 2 rather than being
+found on the first run and saved in `~/.config/ccfind/accounts.json`. `ccfind setup` is the
+interactive way to change it (`cmd_setup`; `--accounts`, `--ask NAME|claude|none` and `--yes` skip
+the questions; `ccfind setup docker` is still a search, see `_is_setup`). Editing the file also
+works, and deleting it looks again. A file that cannot be parsed is searched around, never replaced. Unknown options, `-a` with a bad value and `-p` with no value exit 2 rather than being
 searched for as words. Use `--` before a query that starts with a dash.
 
 ## Agent mode and the clipboard

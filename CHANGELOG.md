@@ -28,6 +28,10 @@ migration in the same line.
   second account gets it found on the next search and every other `~/.claude-*` account with a
   `projects/` folder is now searched too; `ccfind ask` runs under the environment's account
   unless `"ask"` is set.
+- **`ccfind setup`** is an interactive first-time setup: it lists the accounts it found, asks
+  which to search and which one `ccfind ask` runs under and bills, and saves the answer.
+  `--accounts a,b|all|none`, `--ask NAME|claude|none` and `--yes` answer it without a terminal.
+  A person at a terminal also gets a one-line pointer to it after the first autodetect.
 - **`CCASK_ACCOUNT=<name>`** picks the account `ccfind ask` runs under and bills for one run,
   over `"ask"` in the saved config.
 - **`install.sh --skill` and `--account NAME`** install the Claude Code skill globally (user

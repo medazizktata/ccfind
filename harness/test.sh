@@ -63,6 +63,9 @@ if [ $CALIBRATE = 1 ]; then
   sed 's/^    expired = _keep_expired(.*$/    expired = []  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-forgets-expired"
   sed 's/^            if entry.get("expired"):$/            if False:  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-no-expired-sig"
   sed 's|^  CONFIG_DIR="$HOME/.claude-$ACCOUNT"$|  CONFIG_DIR="$HOME/.claude"  # sabotaged|' "$INSTALL_SH" > "$C/install-wrong-dir.sh"
+  sed 's/json.dump({"accounts": {n: home_rel(found\[n\]) for n in keep}, "ask": ask}, fh, indent=2)/fh.write("{}")  # sabotaged/' \
+    "$CCFIND_BIN" > "$C/ccfind-setup-no-save"
+  chmod +x "$C/ccfind-setup-no-save"
   chmod +x "$C/ccfind-no-delta-reader" "$C/ccfind-no-delta-writer" "$C/ccfind-forgets-expired" \
            "$C/ccfind-no-expired-sig"
   for d in ask ask-openguard ask-opensb; do
@@ -87,6 +90,7 @@ if [ $CALIBRATE = 1 ]; then
               "ccfind that rewrites sessions.tsv instead of the delta|CCFIND_BIN=$C/ccfind-no-delta-writer" \
               "ccfind that forgets a session when its transcript is gone|CCFIND_BIN=$C/ccfind-forgets-expired" \
               "ccfind that gives expired sessions no signature|CCFIND_BIN=$C/ccfind-no-expired-sig" \
+              "ccfind setup that never saves|CCFIND_BIN=$C/ccfind-setup-no-save" \
               "install.sh that puts an account's skill in the user dir|INSTALL_SH=$C/install-wrong-dir.sh" \
               "ccask that accepts invented ids|CCASK_BIN=$C/ask/ccask" \
               "guard that allows every tool call|CCASK_BIN=$C/ask-openguard/ccask" \
@@ -282,6 +286,24 @@ check "the next plain search recovers" 0 "+$A"
 SCAN="$(dirname "$(readlink -f "$(command -v agent-fence)")")/nodelete-scan"
 run "$SCAN" "$CCFIND_BIN" "$CCASK_BIN" "$ASK/ccask-guard" "$HERE/test.sh"
 check "no delete calls in ccfind, ccask, guard, test.sh (ast-grep)" 0
+
+# ---------------------------------------------------------------- ccfind setup (interactive)
+OUT=$(printf '2\n2\ny\n' | ccfind setup 2>&1); RC=$?     # search only the 2nd found (third); bill it
+check "setup, answered at the prompts, exits 0 and says it saved" 0 "+Saved" "+bills: third"
+OUT="$(cat "$T/.config/ccfind/accounts.json")"; RC=0
+check "and the file holds exactly that choice" 0 "+third" "-second" "+\"ask\": \"third\""
+run ccfind -n invoice
+check "the next search uses it: the dropped account's session is gone, ~/.claude's stays" 0 "+$A" "-$B"
+OUT=$(ccfind setup --accounts nope --yes 2>&1); RC=$?
+check "setup with an unknown account exits 2" 2 "+is not one of"
+OUT=$(printf 'all\n0\nn\n' | ccfind setup 2>&1); RC=$?
+check "answering n to the save question changes nothing" 1 "+Not saved"
+run ccfind -n invoice
+check "(still the earlier choice)" 0 "+$A" "-$B"
+OUT=$(ccfind setup --accounts all --ask none --yes 2>&1); RC=$?     # back to everything, for the rest
+check "setup with options needs no terminal" 0 "+Saved"
+run ccfind -n invoice
+check "everything is searched again" 0 "+$A" "+$B"
 
 # ---------------------------------------------------------------- install.sh (skill scope)
 inst() { run env PREFIX="$T/inst-bin" sh -c 'cd "$1" && f=$2 && shift 2 && sh "$f" "$@"' _ "$REPO" "$INSTALL_SH" "$@"; }

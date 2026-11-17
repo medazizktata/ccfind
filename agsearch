@@ -110,6 +110,10 @@ def _load_accounts():
             with open(CONFIG_PATH, "w") as fh:
                 json.dump({"accounts": {n: "~" + d[len(HOME):] for n, d in accounts.items()},
                            "ask": None}, fh, indent=2)
+            if accounts and sys.stderr.isatty():
+                print("ccfind: found " + ", ".join(accounts) + f" and saved them to {CONFIG_PATH}."
+                      " Run `ccfind setup` to choose which to search and which one `ask` bills.",
+                      file=sys.stderr)
         except OSError:
             pass
     return accounts, None
@@ -2472,6 +2476,107 @@ def parse_query(query):
     return [(w, _stem(w)) for w in qwords]
 
 
+def _is_setup(argv):
+    """`ccfind setup` or `ccfind setup --option ...`; `ccfind setup docker` is a search."""
+    return bool(argv) and argv[0] == "setup" and (len(argv) == 1 or argv[1].startswith("--"))
+
+
+def _ask_line(prompt, default):
+    """One answer from the person, or `default` on an empty line or end of input."""
+    try:
+        got = input(f"{prompt} [{default}]: ").strip()
+    except EOFError:
+        print()
+        return default
+    return got or default
+
+
+def _pick(text, names, what):
+    """Names from a comma-separated answer: numbers from the list, names, `all` or `none`."""
+    text = text.strip().lower()
+    if text in ("all", "none", ""):
+        return list(names) if text == "all" else []
+    out = []
+    for part in re.split(r"[,\s]+", text):
+        if part.isdigit() and 1 <= int(part) <= len(names):
+            out.append(names[int(part) - 1])
+        elif part in names:
+            out.append(part)
+        else:
+            raise ValueError(f"{part!r} is not one of the {what}: {', '.join(names)}")
+    return list(dict.fromkeys(out))
+
+
+def cmd_setup(argv):
+    """Choose which Claude accounts ccfind searches and which one `ccfind ask` bills, then save.
+
+    Interactive by default. `--accounts a,b|all|none`, `--ask NAME|claude|none` and `--yes`
+    answer the questions up front, so a script can run it without a terminal."""
+    want = {"--accounts": None, "--ask": None}
+    yes = False
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--yes":
+            yes = True
+        elif argv[i] in want and i + 1 < len(argv):
+            i += 1
+            want[argv[i - 1]] = argv[i]
+        else:
+            print("usage: ccfind setup [--accounts a,b|all|none] [--ask NAME|claude|none] [--yes]",
+                  file=sys.stderr)
+            return 2
+        i += 1
+
+    saved = bool(os.path.exists(CONFIG_PATH))
+    home_rel = lambda d: "~" + d[len(HOME):] if d.startswith(HOME + os.sep) else d
+    found = {**_find_accounts(), **ACCOUNT_DIRS}       # what is on disk, and what was saved
+    names = sorted(found)
+    print(f"ccfind keeps its accounts in {CONFIG_PATH}")
+    if names:
+        print("Claude accounts found besides ~/.claude:")
+        for n, name in enumerate(names, 1):
+            mark = "searched" if name in ACCOUNT_DIRS or not saved else "not searched"
+            print(f"  {n}) {name:<14} {home_rel(found[name])}   [{mark}]")
+    else:
+        print("No other Claude accounts found: only ~/.claude is searched.")
+
+    try:
+        if names:
+            keep_default = ",".join(n for n in names if n in ACCOUNT_DIRS) if saved else "all"
+            answer = want["--accounts"] if want["--accounts"] is not None else _ask_line(
+                "Search which besides ~/.claude? numbers like 1,3, names, all or none",
+                keep_default or "none")
+            keep = _pick(answer, names, "accounts")
+        else:
+            keep = []
+        billable = ["claude"] + keep
+        print("Which account should `ccfind ask` run under, and bill?")
+        print("  0) whichever the environment selects (CLAUDE_CONFIG_DIR, else ~/.claude)")
+        for n, name in enumerate(billable, 1):
+            where = "~/.claude" if name == "claude" else home_rel(found[name])
+            print(f"  {n}) {name:<14} {where}")
+        cur = billable.index(ASK_ACCOUNT) + 1 if ASK_ACCOUNT in billable else 0
+        answer = want["--ask"] if want["--ask"] is not None else _ask_line("Number or name", str(cur))
+        if answer.strip().lower() in ("0", "none", ""):
+            ask = None
+        else:
+            ask = _pick(answer, billable, "accounts")[0]
+    except ValueError as e:
+        print(f"ccfind: {e}", file=sys.stderr)
+        return 2
+
+    print(f"Search: ~/.claude{''.join(', ' + n for n in keep)}")
+    print(f"`ccfind ask` bills: {ask or 'whichever the environment selects'}")
+    if not yes and _ask_line(f"Save to {CONFIG_PATH}? y or n", "y").lower() not in ("y", "yes"):
+        print("Not saved.")
+        return 1
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, "w") as fh:
+        json.dump({"accounts": {n: home_rel(found[n]) for n in keep}, "ask": ask}, fh, indent=2)
+    print("Saved. The next search uses it.")
+    return 0
+
+
 def cmd_filter(argv):
     """fzf reload target: print CLEAN session rows ranked for the live query.
 
@@ -2577,11 +2682,15 @@ def main(argv):
     if argv and argv[0] == "_filter":
         cmd_filter(argv[1:])
         return 0
+    # `ccfind setup` alone, or with only --options; `ccfind setup docker` still searches for both
+    if _is_setup(argv):
+        return cmd_setup(argv[1:])
     if argv and argv[0] == "_accounts":      # for ccask: the accounts and which one it runs under
         print("claude\t" + os.path.dirname(PROJECTS_DIR))
         for n, d in ACCOUNT_DIRS.items():
             print(f"{n}\t{d}")
-        print("ask\t" + ACCOUNT_DIRS.get(ASK_ACCOUNT or "", ""))
+        print("ask\t" + (os.path.dirname(PROJECTS_DIR) if ASK_ACCOUNT == "claude"
+                           else ACCOUNT_DIRS.get(ASK_ACCOUNT or "", "")))
         return 0
     if argv and argv[0] == "_transcript":    # fzf ctrl-o, piped to a pager: keep the colour
         render_transcript(argv[1] if len(argv) > 1 else "",

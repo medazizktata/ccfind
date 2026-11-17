@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 import tempfile
 import time
@@ -122,7 +121,8 @@ def snapshot_live_sessions(ag, now=None):
     if not os.path.isfile(src):
         raise FileNotFoundError(f"no live sessions table at {src}; run agsearch once first")
     os.makedirs(ag.CACHE_DIR, exist_ok=True)
-    shutil.copyfile(src, dest)
+    with open(dest, "w") as fh:        # the merged view: sessions.tsv alone misses changed rows
+        fh.write("\n".join(ag.SEP.join(r) for r in ag._read_session_rows()))
     with open(gold_meta_path(ag), "w") as fh:
         json.dump({"now": time.time() if now is None else now,
                    "usage": ag._usage_counts()}, fh, indent=2, sort_keys=True)

@@ -55,6 +55,13 @@ if [ $CALIBRATE = 1 ]; then
   chmod +x "$C/ccfind-no-agent-detect"
   sed 's/^    skip |= set(os.environ.get("CCFIND_EXCLUDE".*$/    pass  # sabotaged/' "$CCFIND_BIN" > "$C/ccfind-no-exclude"
   chmod +x "$C/ccfind-no-exclude"
+  sed 's/^    by_sid.update((f\[C_SID\], f) for f in _read_rows(_delta_path()))$/    pass  # sabotaged/' \
+    "$CCFIND_BIN" > "$C/ccfind-no-delta-reader"
+  sed 's/^        if fresh and clean and sum(map(len, delta)) <= DELTA_MAX:$/        if False:  # sabotaged/' \
+    "$CCFIND_BIN" > "$C/ccfind-no-delta-writer"
+  sed -e 's/^    return \[by_sid\[sid\] for sid in sorted(sigs, key=.*$/    return list(by_sid.values())  # sabotaged/' \
+      -e '/^            if sid in by_sid\]$/d' "$CCFIND_BIN" > "$C/ccfind-keeps-vanished"
+  chmod +x "$C/ccfind-no-delta-reader" "$C/ccfind-no-delta-writer" "$C/ccfind-keeps-vanished"
   for d in ask ask-openguard ask-opensb; do
     mkdir -p "$C/$d"; cp "$ASK/ccask-system.md" "$ASK/ccask-guard" "$CCASK_BIN" "$C/$d/"
   done
@@ -73,6 +80,9 @@ if [ $CALIBRATE = 1 ]; then
               "ccfind without account filter|CCFIND_BIN=$C/ccfind-no-account" \
               "ccfind that never detects agents|CCFIND_BIN=$C/ccfind-no-agent-detect" \
               "ccfind that ignores CCFIND_EXCLUDE|CCFIND_BIN=$C/ccfind-no-exclude" \
+              "ccfind whose reader ignores sessions.tsv.delta|CCFIND_BIN=$C/ccfind-no-delta-reader" \
+              "ccfind that rewrites sessions.tsv instead of the delta|CCFIND_BIN=$C/ccfind-no-delta-writer" \
+              "ccfind that lists sessions whose transcript is gone|CCFIND_BIN=$C/ccfind-keeps-vanished" \
               "ccask that accepts invented ids|CCASK_BIN=$C/ask/ccask" \
               "guard that allows every tool call|CCASK_BIN=$C/ask-openguard/ccask" \
               "ccask that leaks the caller's session to its agent|CCASK_BIN=$C/ask-noexclude/ccask" \
@@ -204,6 +214,14 @@ printf '{"type":"user","sessionId":"%s","cwd":"%s","timestamp":"2026-10-01T10:05
   "$A" "$T/work/alpha" "$A" >> "$FA"
 run ccfind -n pangolin
 check "a line appended to a transcript is found on the next search" 0 "+$A"
+# What the search left in the cache: the changed row beside sessions.tsv, not in it
+CF="$XDG_CACHE_HOME/ccfind"
+OUT=$(cut -f1 "$CF/sessions.tsv.delta" 2>&1); RC=0
+check "only the appended session's row is in sessions.tsv.delta" 0 "+$A" "-$B" "-$C"
+OUT="rows mentioning pangolin in sessions.tsv: $(grep -c pangolin "$CF/sessions.tsv")"; RC=0
+check "sessions.tsv itself was not rewritten for it" 0 "~: 0$"
+run python3 "$CCFIND_BIN" _filter 0 pangolin
+check "the fzf reload target (_filter) sees the delta row" 0 "+$A"
 FD=$(mk claude $D "$T/work/delta" "$T/work/delta" "Delta" "okapi brand new")
 run ccfind -n okapi
 check "a new transcript is found on the next search" 0 "+$D"
@@ -213,6 +231,25 @@ run ccfind -n okapi
 check "a transcript moved away drops out of results" 1 "-$D"
 OUT="cached copies: before=$frags_before after=$(ls "$XDG_CACHE_HOME/ccfind/frag" | wc -l)"; RC=0
 check "stale cached copy is left in place (no deletes)" 0 "~before= *([0-9]+) after= *\\1$"
+
+# A session that sits in sessions.tsv itself: gone from results when its transcript goes, back when it returns
+FC="$T/.claude-second/projects/$(slug "$T/work/gamma")/$C.jsonl"
+mv "$FC" "$T/moved/"
+run ccfind -n marmoset
+check "a session stored in sessions.tsv drops out when its transcript is moved away" 1 "-$C"
+run python3 "$CCFIND_BIN" _filter 0 marmoset
+check "and the fzf reload target stops listing it" 0 "-$C"
+mv "$T/moved/$C.jsonl" "$FC"
+run ccfind -n marmoset
+check "it comes back with its transcript" 0 "+$C"
+run python3 "$CCFIND_BIN" _filter 0 marmoset
+check "and the fzf reload target lists it again" 0 "+$C"
+# A scoped search empties the cache's signatures and the delta; the next plain search recovers
+run ccfind -n -a claude pangolin
+OUT="delta bytes: $(wc -c < "$CF/sessions.tsv.delta" | tr -d ' '), signatures: $(cat "$CF/sessions.sig.json")"; RC=0
+check "a scoped search empties the delta and the signatures" 0 "~bytes: 0, signatures: \\{\\}$"
+run ccfind -n pangolin
+check "the next plain search recovers" 0 "+$A"
 
 # Structural scan (ast-grep, ~/Desktop/agent-fence/nodelete-scan): real calls only, so
 SCAN="$(dirname "$(readlink -f "$(command -v agent-fence)")")/nodelete-scan"

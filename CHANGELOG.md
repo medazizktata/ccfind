@@ -11,6 +11,14 @@ migration in the same line.
 
 ## [Unreleased]
 
+### Changed
+
+- **A search that finds changed sessions writes only those rows.** They go to
+  `sessions.tsv.delta`; `sessions.tsv` is rewritten whole only on a first or scoped build, or
+  when the changed rows pass 16 MB. `-n` prints its results before it writes the cache.
+  Migration: none; the first search after upgrading regroups every session once from the
+  cached fragments, because the session format number changed (it is part of each signature).
+
 ### Fixed
 
 - **`agsearch read` no longer crashes on superscript digits.** A message containing `¹` or

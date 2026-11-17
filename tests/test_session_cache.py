@@ -68,6 +68,133 @@ class SessionCacheTests(unittest.TestCase):
         self.assertEqual(self.grouped[-1], 2)
 
 
+class DeltaTests(unittest.TestCase):
+    """A changed session is written to sessions.tsv.delta; sessions.tsv is left alone."""
+
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        for name in ("INDEX_PATH", "SESSIONS_PATH", "SESSSIG_PATH", "DELTA_MAX"):
+            self.addCleanup(setattr, ag, name, getattr(ag, name))
+        for name in ("INDEX_PATH", "SESSIONS_PATH", "SESSSIG_PATH"):
+            setattr(ag, name, os.path.join(d.name, name))
+        json.dump({}, open(ag.INDEX_PATH, "w"))
+        self.addCleanup(ag._FRESH.clear)
+        self.lines = [line("a", "alpha", "2026-08-19T10:00:00"),
+                      line("b", "beta", "2026-08-18T10:00:00"),
+                      line("c", "gamma", "2026-08-17T10:00:00")]
+        self.sigs = {"a": "f1:1", "b": "f2:1", "c": "f3:1"}
+
+    def _build(self, lines=None, sigs=None):
+        lines = self.lines if lines is None else lines
+        ag._FRESH.clear()
+        ag._FRESH.update(lines=lines, force=False, sigs=self.sigs if sigs is None else sigs)
+        return ag.build_sessions(lines)
+
+    def _main(self):
+        return open(ag.SESSIONS_PATH).read()
+
+    def _delta_sids(self):
+        return {f[ag.C_SID] for f in ag._read_rows(ag.SESSIONS_PATH + ".delta")}
+
+    def _change(self, sid, text):
+        self.lines = [line(f[0], text, f[3]) if f[0] == sid else l
+                      for l, f in ((l, l.split(SEP)) for l in self.lines)]
+        self.sigs = {**self.sigs, sid: self.sigs[sid] + "x"}
+
+    def test_a_changed_session_goes_to_the_delta_and_sessions_tsv_stands(self):
+        self._build()
+        before = self._main()
+        self._change("b", "beta rewritten")
+        rows = self._build()
+        self.assertEqual(self._main(), before)
+        self.assertEqual(self._delta_sids(), {"b"})
+        self.assertIn("rewritten", {r[0]: r for r in rows}["b"][ag.C_BLOB])
+
+    def test_the_reader_sees_the_new_row_in_date_order_and_matches_the_build(self):
+        self._build()
+        self._change("b", "beta rewritten")
+        rows = self._build()
+        self.assertEqual(ag._read_session_rows(), rows)
+        self.assertEqual([r[0] for r in rows], ["a", "b", "c"])
+
+    def test_a_session_that_became_the_newest_is_listed_first(self):
+        """The delta holds rows in no particular place: the order comes from the signatures."""
+        self._build()
+        self.lines[2] = line("c", "gamma again", "2026-08-25T10:00:00")
+        self.sigs = {**self.sigs, "c": "f3:2"}
+        rows = self._build()
+        self.assertEqual([r[0] for r in rows], ["c", "a", "b"])
+        self.assertEqual([r[0] for r in ag._read_session_rows()], ["c", "a", "b"])
+
+    def test_the_cached_rows_equal_a_full_rebuild(self):
+        self._build()
+        self._change("c", "gamma rewritten")
+        self._build()
+        cached = ag._read_session_rows()
+        ag._FRESH.clear()
+        full = ag.build_sessions(self.lines)       # no build_index record: regroup everything
+        self.assertEqual(sorted(cached), sorted(full))
+
+    def test_a_second_changed_session_keeps_the_first_in_the_delta(self):
+        self._build()
+        self._change("b", "beta rewritten")
+        self._build()
+        self._change("c", "gamma rewritten")
+        self._build()
+        self.assertEqual(self._delta_sids(), {"b", "c"})
+        blobs = {r[0]: r[ag.C_BLOB] for r in ag._read_session_rows()}
+        self.assertIn("beta rewritten", blobs["b"])
+        self.assertIn("gamma rewritten", blobs["c"])
+
+    def test_nothing_changed_writes_nothing(self):
+        self._build()
+        self._change("b", "beta rewritten")
+        self._build()
+        mark = {p: os.stat(p).st_mtime_ns for p in (ag.SESSIONS_PATH, ag.SESSSIG_PATH,
+                                                    ag.SESSIONS_PATH + ".delta")}
+        self._build()
+        for p, m in mark.items():
+            self.assertEqual(os.stat(p).st_mtime_ns, m, p)
+
+    def test_past_the_cap_sessions_tsv_is_rewritten_and_the_delta_emptied(self):
+        self._build()
+        self._change("b", "beta rewritten")
+        self._build()
+        ag.DELTA_MAX = 0
+        self._change("c", "gamma rewritten")
+        self._build()
+        self.assertEqual(self._delta_sids(), set())
+        self.assertIn("beta rewritten", self._main())
+        self.assertIn("gamma rewritten", self._main())
+
+    def test_a_session_that_went_away_is_not_returned(self):
+        self._build()
+        self.sigs = {k: v for k, v in self.sigs.items() if k != "c"}
+        self.lines = [l for l in self.lines if not l.startswith("c" + SEP)]
+        rows = self._build()
+        self.assertEqual([r[0] for r in rows], ["a", "b"])
+        self.assertEqual([r[0] for r in ag._read_session_rows()], ["a", "b"])
+
+    def test_a_delta_is_ignored_when_the_signatures_are_empty(self):
+        """A scoped or killed build empties the signatures: nothing beside sessions.tsv counts."""
+        self._build()
+        self._change("b", "beta rewritten")
+        self._build()
+        json.dump({}, open(ag.SESSSIG_PATH, "w"))
+        rows = ag._read_session_rows()
+        self.assertNotIn("rewritten", {r[0]: r for r in rows}["b"][ag.C_BLOB])
+
+    def test_a_scoped_build_clears_the_delta(self):
+        self._build()
+        self._change("b", "beta rewritten")
+        self._build()
+        ag._FRESH.clear()
+        ag.build_sessions([self.lines[0]])
+        self.assertEqual(self._delta_sids(), set())
+        self.assertEqual([r[0] for r in ag._read_session_rows()], ["a"])
+
+
 class LazyLinesTests(unittest.TestCase):
     """build_index returns a lazy object: unchanged fragments are not read on a warm run."""
 

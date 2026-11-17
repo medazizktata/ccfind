@@ -83,7 +83,9 @@ INDEX_PATH = os.path.join(CACHE_DIR, "index.json")        # sid -> {source, path
 FORKS_PATH = os.path.join(CACHE_DIR, "forks.json")        # forked sid -> {of, at}
 FORKFAM_PATH = os.path.join(CACHE_DIR, "forkfam.json")    # fork family (paths+mtimes) -> its forks
 SESSSIG_PATH = os.path.join(CACHE_DIR, "sessions.sig.json")   # sid -> [source-file signature, date]
-SESS_FMT = 1    # bump when build_sessions changes what a sessions.tsv row holds
+SESS_FMT = 2    # bump when build_sessions changes what a sessions.tsv row holds, or where
+                # rows live: 2 added sessions.tsv.delta, which a build that predates it ignores
+DELTA_MAX = 16_000_000   # bytes of changed rows kept beside sessions.tsv before it is rewritten
 FILESIDS_PATH = os.path.join(CACHE_DIR, "filesids.json")   # path -> [mtime, [sids]] its fragment holds
 
 CACHE_FMT = 7   # bump when the TSV column layout / keying changes, to invalidate old fragments
@@ -1879,18 +1881,47 @@ def _session_row(s, index):
     return [s["sid"], s["cwd"], s["date"][:10], source, s["kind"], title, first, blob]
 
 
+def _read_rows(path):
+    """Complete session rows in a TSV, in file order; missing file or torn line: skipped."""
+    try:
+        raw = open(path, errors="replace").read().splitlines()
+    except OSError:
+        return []
+    return [f for f in (l.split(SEP) for l in raw) if len(f) == SESSION_COLS]
+
+
+def _delta_path():
+    return SESSIONS_PATH + ".delta"
+
+
+def _read_session_rows():
+    """The rows of the last build, newest first: sessions.tsv with the changed rows in
+    sessions.tsv.delta laid over it (a delta row replaces the row of the same session).
+
+    Only a session in sessions.sig.json counts, and the delta is read only when that file
+    holds something: it is emptied while a build writes and by every scoped build, and a
+    delta that outlives that is not trusted. With no signatures, sessions.tsv is returned as
+    written, in its own order."""
+    rows = _read_rows(SESSIONS_PATH)
+    try:
+        sigs = json.load(open(SESSSIG_PATH))
+    except (OSError, json.JSONDecodeError):
+        sigs = {}
+    if not sigs:
+        return rows
+    by_sid = {f[C_SID]: f for f in rows}
+    by_sid.update((f[C_SID], f) for f in _read_rows(_delta_path()))
+    return [by_sid[sid] for sid in sorted(sigs, key=lambda k: sigs[k][1], reverse=True)
+            if sid in by_sid]
+
+
 def _load_session_cache():
     """({sid: [signature, full date]}, {sid: row}) from the last unscoped build, or empty."""
     try:
         sigs = json.load(open(SESSSIG_PATH))
-        rows = {}
-        for l in open(SESSIONS_PATH, errors="replace").read().splitlines():
-            f = l.split(SEP)
-            if len(f) == SESSION_COLS:
-                rows[f[C_SID]] = f
-        return sigs, rows
     except (OSError, json.JSONDecodeError):
         return {}, {}
+    return sigs, {f[C_SID]: f for f in _read_session_rows()}
 
 
 def build_sessions(lines, later=None):
@@ -1926,10 +1957,20 @@ def build_sessions(lines, later=None):
     if fresh and clean and not dirty and len(old_rows) == len(clean):
         return out                  # nothing changed: sessions.tsv and its signatures stand
     def write():
-        with open(SESSSIG_PATH, "w") as fh:     # empty while sessions.tsv is rewritten or scoped,
+        # A search that changed a few sessions writes only those rows, beside sessions.tsv: the
+        # file is 150+ MB and a live session changes on nearly every search. It is rewritten
+        # whole on a first or scoped build, and when the changed rows outgrow DELTA_MAX.
+        delta_sids = dirty | ({f[C_SID] for f in _read_rows(_delta_path())} & clean)
+        delta = [SEP.join(r) for _d, r in done if r[C_SID] in delta_sids]
+        with open(SESSSIG_PATH, "w") as fh:     # empty while the rows are written or scoped,
             fh.write("{}")                      # so a killed or filtered run is never reused
-        with open(SESSIONS_PATH, "w") as fh:             # what _filter reads, one line each
-            fh.write("\n".join(SEP.join(r) for r in out))
+        if fresh and clean and sum(map(len, delta)) <= DELTA_MAX:
+            with open(_delta_path(), "w") as fh:
+                fh.write("\n".join(delta))
+        else:
+            with open(SESSIONS_PATH, "w") as fh:         # what _filter reads, one line each
+                fh.write("\n".join(SEP.join(r) for r in out))
+            open(_delta_path(), "w").close()
         if fresh:
             json.dump({r[C_SID]: [sigs[r[C_SID]], d] for d, r in done if r[C_SID] in sigs},
                       open(SESSSIG_PATH, "w"))
@@ -2229,11 +2270,9 @@ def cmd_filter(argv):
     BM25 over title / first prompt / transcript, then nudged by recency and resume count.
     """
     qterms = parse_query(" ".join(argv[1:]) if argv else "")
-    try:
-        raw = open(SESSIONS_PATH, errors="replace").read().splitlines()
-    except OSError:
+    rows = _read_session_rows()
+    if not rows:
         return
-    rows = [line.split(SEP) for line in raw if line.count(SEP) >= SESSION_COLS - 1]
 
     live = _active_sids([f[C_SID] for f in rows])
     gone = _missing_dirs([f[C_CWD] for f in rows])

@@ -32,11 +32,16 @@ timed() {
   grep -q 'resume' "$out" || die "no results from $CCFIND_BIN for query '$QUERY' (see $out)"
   echo "$t"
 }
-# True if the last timed run rewrote sessions.tsv. A run does that whenever any session's
-# transcript changed since the run before (a live session), and it is a large share of the time.
-rewrote() { [ -n "$(find "$C/sessions.tsv" -newer "$MARK" 2>/dev/null)" ]; }
+# What the last timed run wrote of the session cache: 0 nothing, 1 only the changed rows
+# (sessions.tsv.delta), 2 the whole sessions.tsv. A run writes when any session's transcript
+# changed since the run before (a live session); the whole file is 150+ MB.
+wrote() {
+  if [ -n "$(find "$C/sessions.tsv" -newer "$MARK" 2>/dev/null)" ]; then echo 2
+  elif [ -n "$(find "$C/sessions.tsv.delta" -newer "$MARK" 2>/dev/null)" ]; then echo 1
+  else echo 0; fi
+}
 blank_caches() { echo '{}' > "$C/sessions.sig.json"; echo '{}' > "$C/forkfam.json"; }
-pick() {  # seconds of the warm runs whose rewrote flag equals $1
+pick() {  # seconds of the warm runs whose wrote code equals $1
   local i; for i in "${!warm[@]}"; do [ "${warm_rw[$i]}" = "$1" ] && echo "${warm[$i]}"; done
 }
 stats() {  # min median max of the seconds on stdin
@@ -57,7 +62,7 @@ timed "$BENCH_DIR/prime.out" >/dev/null || exit 1          # absorbs files that 
 warm=() warm_rw=() full=()
 for ((i = 0; i < RUNS; i++)); do
   warm+=("$(timed "$BENCH_DIR/warm.out")") || exit 1
-  if rewrote; then warm_rw+=(1); else warm_rw+=(0); fi
+  warm_rw+=("$(wrote)")
 done
 for ((i = 0; i < RUNS; i++)); do blank_caches; full+=("$(timed "$BENCH_DIR/full.out")") || exit 1; done
 
@@ -72,9 +77,10 @@ echo "| arm | min s | median s | max s |"
 echo "|---|---|---|---|"
 echo "| cold (empty cache, parses every transcript, 1 run) | $cold | $cold | $cold |"
 echo "| warm, caches on, all $RUNS runs | $(printf '%s\n' "${warm[@]}" | stats) |"
-nq=$(pick 0 | grep -c .); nr=$(pick 1 | grep -c .)
-echo "|  of which quiet: nothing changed, sessions.tsv not rewritten ($nq of $RUNS) | $(pick 0 | stats) |"
-echo "|  of which a live session wrote: sessions.tsv rewritten ($nr of $RUNS) | $(pick 1 | stats) |"
+nq=$(pick 0 | grep -c .); nd=$(pick 1 | grep -c .); nr=$(pick 2 | grep -c .)
+echo "|  of which quiet: nothing changed, nothing written ($nq of $RUNS) | $(pick 0 | stats) |"
+echo "|  of which a live session wrote: only the changed rows, sessions.tsv.delta ($nd of $RUNS) | $(pick 1 | stats) |"
+echo "|  of which sessions.tsv was rewritten whole ($nr of $RUNS) | $(pick 2 | stats) |"
 echo "| warm, session and fork caches blanked | $(printf '%s\n' "${full[@]}" | stats) |"
 
 echo

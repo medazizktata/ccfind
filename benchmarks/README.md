@@ -16,7 +16,7 @@ deletes nothing: the cache stays in `$TMPDIR/ccfind-bench.*` and the path is pri
 | arm | what it is |
 |---|---|
 | cold | empty cache; every transcript parsed once |
-| warm, caches on | the normal case: fragments, fork map and session rows cached. Reported for all runs, then split by whether the run rewrote `sessions.tsv` (see "Live sessions" below) |
+| warm, caches on | the normal case: fragments, fork map and session rows cached. Reported for all runs, then split by what the run wrote of the session cache: nothing, only the changed rows, or the whole `sessions.tsv` (see below) |
 | warm, caches blanked | same, but `sessions.sig.json` and `forkfam.json` emptied before each run, so the fork map and session rows are rebuilt from the cached fragments. This is what a search cost before commit `c64ccf0`, and it is also what a build without those caches does when pointed at the same files |
 
 The script prints min, median and max seconds per arm. It sets no pass/fail speed threshold:
@@ -55,7 +55,8 @@ ratios.
 Re-running the same build (`df3969d`, `agsearch` byte-identical to the one behind 1.79 s) on
 2026-11-16 gave a warm median of 3.01 s. Nothing in ccfind had changed; two things did:
 
-- **A live session wrote.** A session counts as changed when any of its transcript files
+- **A live session wrote.** (Since 2026-11-17 this costs less: see "Changed rows go to a delta
+  file" below. The figures in this bullet are from the build before that change.) A session counts as changed when any of its transcript files
   changes, subagent files included. Any changed session makes `build_sessions` rewrite the
   whole 158 MB `sessions.tsv`, not just that row. Calling `build_index` and `build_sessions`
   directly, one run found 3 changed sessions (another repo's session and its subagent, and
@@ -76,6 +77,17 @@ is visible instead of being averaged in. It cannot make a session stop writing, 
 machine the "quiet" group can be small or empty. An attempt to force the comparison (a clean
 run against one deliberately dirty session, interleaved) failed: live sessions dirtied the
 clean arm too, so both arms rewrote the file and the two medians meant nothing.
+
+### Changed rows go to a delta file
+
+A search that finds changed sessions now writes only those rows, to `sessions.tsv.delta`, and
+leaves the 158 MB `sessions.tsv` alone; readers lay the delta over it. `sessions.tsv` is
+rewritten whole on a first or scoped build, or once the changed rows pass 16 MB. `-n` also
+prints and flushes before it writes. With one changed session per run (8 runs per build,
+load 9 to 25): process exit 2.85 s before, 2.76 s with print-first, 2.24 s with the delta file;
+last byte 2.83 s, 2.32 s, 2.17 s. Reading the 158 MB (about 1.1 s) is unchanged. Method,
+checks and what was not verified: `results/2026-11-17-delta-rows.md`;
+`compare_builds.py` reproduces the table.
 
 What the lazy-rows step changed: `build_index` used to read every fragment (about 458k rows)
 into a list on every run, so a search could print a dozen sessions. It now returns a lazy
@@ -110,8 +122,9 @@ Each was run and had to fail (2026-11-16):
 | `CCFIND_BIN=/bin/echo` (does nothing) | exit 1: "no results from /bin/echo" |
 | a build that corrupts every reused row (title replaced with `X`) | exit 1: output check and row check both failed |
 | the real build, same cache, afterwards | exit 0 |
-| `CCFIND_BIN` stub that never writes `sessions.tsv`, 4 warm runs | the "quiet" row counts 4 of 4, the "rewritten" row 0 |
-| `CCFIND_BIN` stub that always writes `sessions.tsv`, 4 warm runs | the "quiet" row counts 0 of 4, the "rewritten" row 4 |
+| `CCFIND_BIN` stub that writes no cache file, 4 warm runs | the "quiet" row counts 4 of 4, the other two 0 |
+| stub that writes only `sessions.tsv.delta` | the "changed rows" row counts 4 of 4, the other two 0 |
+| stub that writes `sessions.tsv` | the "rewritten whole" row counts 4 of 4, the other two 0 |
 
 A build that only *drops* a cached row would not be caught by the row check: the dropped
 session has no cached signature next run, so it is regrouped and the cache heals itself. The

@@ -63,6 +63,38 @@ class NonInteractiveTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
 
+    def test_the_cache_is_written_after_the_output_is_flushed(self):
+        """Rewriting sessions.tsv is about a second: the reader must not wait for it."""
+        seen = []
+
+        class Out(io.StringIO):
+            def flush(self):
+                seen.append(os.path.exists(ag.SESSIONS_PATH))
+                super().flush()
+
+        with tempfile.TemporaryDirectory() as d:
+            ag.CACHE_DIR = d
+            ag.SESSIONS_PATH = os.path.join(d, "sessions.tsv")
+            ag.INDEX_PATH = os.path.join(d, "index.json")
+            json.dump({}, open(ag.INDEX_PATH, "w"))
+            with redirect_stdout(Out()), redirect_stderr(io.StringIO()):
+                ag.print_matches([msg("sid1", "please migrate the billing database")], "billing")
+            self.assertTrue(os.path.exists(ag.SESSIONS_PATH), "the cache is still written")
+        self.assertEqual(seen, [False], "stdout was flushed before sessions.tsv existed")
+
+    def test_a_search_with_no_match_still_writes_the_cache(self):
+        """The early return must not skip the deferred write."""
+        with tempfile.TemporaryDirectory() as d:
+            ag.CACHE_DIR = d
+            ag.SESSIONS_PATH = os.path.join(d, "sessions.tsv")
+            ag.INDEX_PATH = os.path.join(d, "index.json")
+            json.dump({}, open(ag.INDEX_PATH, "w"))
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                code = ag.print_matches([msg("sid1", "please migrate the billing database")],
+                                        "kubernetes")
+            self.assertEqual(code, 1)
+            self.assertTrue(os.path.exists(ag.SESSIONS_PATH))
+
 
 if __name__ == "__main__":
     unittest.main()

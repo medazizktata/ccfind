@@ -1159,6 +1159,19 @@ def _match_entry(f, matched, total, texts, keys, idlen=36, pad=True):
 
 
 def print_matches(lines, query, limit=20):
+    """Print the results, then write the session cache: a rewrite of sessions.tsv is about a
+    second that nobody reading the output should wait for. (A pipe reader still sees the
+    process exit after the write; a terminal does not.)"""
+    later = []
+    try:
+        return _print_matches(lines, query, limit, later)
+    finally:
+        sys.stdout.flush()
+        for write in later:
+            write()
+
+
+def _print_matches(lines, query, limit, later):
     """Non-interactive results: the same ranked sessions the TUI lists, one entry each.
 
     This is the surface a pipe reads — an agent, a script, an install without fzf — so it runs
@@ -1166,7 +1179,7 @@ def print_matches(lines, query, limit=20):
     AND-of-substrings sorted by date over *message* rows, which meant no BM25, no stemming, no
     typo tier, no demotion of automation, and one session repeated once per matching message.
     """
-    rows = build_sessions(lines)
+    rows = build_sessions(lines, later)
     if not rows:
         print("No indexed sessions found.", file=sys.stderr)
         return 1
@@ -1880,14 +1893,18 @@ def _load_session_cache():
         return {}, {}
 
 
-def build_sessions(lines):
+def build_sessions(lines, later=None):
     """Write one line per session to SESSIONS_PATH: sid, cwd, date, source, kind, title, first
     prompt, blob. The first prompt is stored separately from the blob so ranking can weight it
     as its own field — it's the strongest single signal of what a session is about.
 
     When `lines` is exactly what build_index returned (no scope filter), a session whose source
     files are unchanged keeps its row from the last build; only changed sessions are regrouped.
-    Equal-date sessions may come out in a different order than from a full rebuild."""
+    Equal-date sessions may come out in a different order than from a full rebuild.
+
+    A caller that only prints (it does not hand SESSIONS_PATH to another process) passes a list
+    as `later`: the cache write is appended to it as a function instead of run, so the caller
+    can print first and write afterwards."""
     try:
         index = json.load(open(INDEX_PATH))
     except (OSError, json.JSONDecodeError):
@@ -1908,13 +1925,18 @@ def build_sessions(lines):
     out = [r for _d, r in done]
     if fresh and clean and not dirty and len(old_rows) == len(clean):
         return out                  # nothing changed: sessions.tsv and its signatures stand
-    with open(SESSSIG_PATH, "w") as fh:     # empty while sessions.tsv is rewritten or scoped,
-        fh.write("{}")                      # so a killed or filtered run is never reused
-    with open(SESSIONS_PATH, "w") as fh:                 # what _filter reads, one line each
-        fh.write("\n".join(SEP.join(r) for r in out))
-    if fresh:
-        json.dump({r[C_SID]: [sigs[r[C_SID]], d] for d, r in done if r[C_SID] in sigs},
-                  open(SESSSIG_PATH, "w"))
+    def write():
+        with open(SESSSIG_PATH, "w") as fh:     # empty while sessions.tsv is rewritten or scoped,
+            fh.write("{}")                      # so a killed or filtered run is never reused
+        with open(SESSIONS_PATH, "w") as fh:             # what _filter reads, one line each
+            fh.write("\n".join(SEP.join(r) for r in out))
+        if fresh:
+            json.dump({r[C_SID]: [sigs[r[C_SID]], d] for d, r in done if r[C_SID] in sigs},
+                      open(SESSSIG_PATH, "w"))
+    if later is None:
+        write()
+    else:
+        later.append(write)
     return out
 
 

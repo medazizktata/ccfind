@@ -232,6 +232,16 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(self.ag._account_launch(os.path.join(home, "opencode.db")),
                          ["env", "XDG_DATA_HOME=" + parent, "opencode"])
 
+    def test_a_home_in_the_temp_dir_is_not_saved_as_an_account_unless_home_is_there_too(self):
+        """CODEX_HOME set for one throwaway shell must not become an account for good."""
+        scratch = os.path.join(self.home, "codex-x")
+        os.makedirs(os.path.join(scratch, "sessions"))
+        os.environ["CODEX_HOME"] = scratch
+        self.assertEqual(self.ag._find_accounts(), {"codex-x": ("codex", scratch)})   # HOME is in the temp dir too
+        self.ag.HOME = "/nonexistent-home/h"
+        with mock.patch.object(self.ag.tempfile, "gettempdir", return_value=self.home):
+            self.assertEqual(self.ag._find_accounts(), {})
+
     def test_xdg_data_home_at_its_usual_place_is_not_a_second_opencode_account(self):
         share = os.path.join(self.home, ".local", "share")
         os.makedirs(os.path.join(share, "opencode"))

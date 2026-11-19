@@ -62,6 +62,7 @@ import json
 import shlex
 import time
 import shutil
+import tempfile
 import datetime
 import hashlib
 import subprocess
@@ -155,6 +156,16 @@ def _env_value(h, home):
     return os.path.dirname(home) if h["env_parent"] else home
 
 
+def _is_scratch(path):
+    """True for a folder under the temp dir when HOME is not: a variable set for one throwaway
+    shell must not become a saved account for good."""
+    def under(p, root):
+        p, root = os.path.realpath(p), os.path.realpath(root)
+        return p == root or p.startswith(root + os.sep)
+    roots = {tempfile.gettempdir(), "/tmp"}
+    return any(under(path, r) for r in roots) and not any(under(HOME, r) for r in roots)
+
+
 def _find_accounts():
     """Every other account of each service: {key: (source, home dir)}.
 
@@ -176,7 +187,7 @@ def _find_accounts():
                 found[key] = (source, os.path.join(HOME, n))
         env = os.environ.get(h["env"], "") if h["env"] else ""
         home = _home_of(h, env) if env else ""
-        if (home and os.path.realpath(home) != os.path.realpath(default)
+        if (home and not _is_scratch(home) and os.path.realpath(home) != os.path.realpath(default)
                 and os.path.exists(os.path.join(home, h["marker"]))
                 and not any(os.path.realpath(d) == os.path.realpath(home) for _s, d in found.values())):
             base = os.path.basename((env if h["env_parent"] else home).rstrip(os.sep)).lstrip(".").lower()

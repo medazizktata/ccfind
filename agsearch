@@ -89,8 +89,10 @@ ACCOUNT_HOMES = {
     "gemini": {"prefix": ".gemini", "sub": "tmp", "marker": "tmp", "cmd": "gemini",
                "env": "GEMINI_CLI_HOME", "env_parent": ".gemini", "siblings": False,
                "key": "gemini-", "default": "gemini"},
+    # One account only: with CURSOR_CONFIG_DIR set, cursor-agent moves its config and chats/ there
+    # but still writes the transcripts ccfind reads (projects/) to ~/.cursor (run 2026-11-19).
     "cursor": {"prefix": ".cursor", "sub": "projects", "marker": "projects", "cmd": "cursor-agent",
-               "env": "CURSOR_CONFIG_DIR", "env_parent": None, "siblings": True, "key": "cursor-",
+               "env": None, "env_parent": None, "siblings": False, "key": "cursor-",
                "default": "cursor"},
     "opencode": {"prefix": os.path.join(".local", "share", "opencode"), "sub": "",
                  "marker": "opencode.db", "cmd": "opencode", "env": "XDG_DATA_HOME",
@@ -172,7 +174,7 @@ def _find_accounts():
             if (n.startswith(h["prefix"] + "-") and name and key not in _RESERVED_ACCOUNTS
                     and os.path.exists(os.path.join(HOME, n, h["marker"]))):
                 found[key] = (source, os.path.join(HOME, n))
-        env = os.environ.get(h["env"], "")
+        env = os.environ.get(h["env"], "") if h["env"] else ""
         home = _home_of(h, env) if env else ""
         if (home and os.path.realpath(home) != os.path.realpath(default)
                 and os.path.exists(os.path.join(home, h["marker"]))

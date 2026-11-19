@@ -23,11 +23,11 @@ unless you know where the session was started.
 
 ## Accounts
 
-ccfind finds more than one account of the same service, for Claude, Codex, Cursor CLI, Gemini CLI
-and OpenCode. Another account is a sibling folder (`~/.claude-<name>`, `~/.codex-<name>`,
-`~/.cursor-<name>`) that holds sessions, or the home the tool's own variable points at when it is
-somewhere else: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CURSOR_CONFIG_DIR`, `GEMINI_CLI_HOME`,
-`XDG_DATA_HOME` (OpenCode). It finds them on the first run and saves the list in
+ccfind finds more than one account of the same service, for Claude, Codex, Gemini CLI and
+OpenCode. Another account is a sibling folder (`~/.claude-<name>`, `~/.codex-<name>`) that holds
+sessions, or the home the tool's own variable points at when it is somewhere else:
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, `XDG_DATA_HOME` (OpenCode). Cursor CLI is one
+account: it keeps its transcripts in `~/.cursor` whatever `CURSOR_CONFIG_DIR` says. It finds them on the first run and saves the list in
 `~/.config/ccfind/accounts.json`. **`ccfind setup`** walks you through it: which accounts to
 search, and which one `ccfind ask` runs under and bills (`ccfind setup --accounts a,b --ask a
 --yes` answers it without a terminal). To change it by hand: edit that file to drop one, or to set `"ask"`, the account

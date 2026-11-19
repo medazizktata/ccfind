@@ -23,7 +23,7 @@ class AccountTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         for h in ag.ACCOUNT_HOMES.values():              # the developer's own must not leak in
-            os.environ.pop(h["env"], None)
+            os.environ.pop(h["env"] or "", None)
 
     def account(self, prefix, name, sub, launcher=False):
         d = os.path.join(self.home, f".{prefix}-{name}")
@@ -240,10 +240,13 @@ class AccountTests(unittest.TestCase):
         os.environ["XDG_DATA_HOME"] = share
         self.assertEqual(self.ag._find_accounts(), {})
 
-    def test_a_cursor_home_beside_the_default_is_an_account_and_gemini_has_no_such_convention(self):
-        c = self.account("cursor", "work", "projects")
+    def test_cursor_and_gemini_have_no_second_account_by_folder_or_variable(self):
+        """cursor-agent keeps writing transcripts to ~/.cursor/projects whatever CURSOR_CONFIG_DIR
+        says (run for real), so neither a folder nor that variable makes a second account."""
+        self.account("cursor", "work", "projects")
         self.account("gemini", "work", "tmp")
-        self.assertEqual(self.ag._find_accounts(), {"cursor-work": ("cursor", c)})
+        os.environ["CURSOR_CONFIG_DIR"] = os.path.join(self.home, ".cursor-work")
+        self.assertEqual(self.ag._find_accounts(), {})
 
     def test_dash_a_knows_the_default_account_of_every_service(self):
         for h in self.ag.ACCOUNT_HOMES.values():

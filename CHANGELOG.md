@@ -25,8 +25,9 @@ migration in the same line.
   silently.
 - **`ccfind ask` ends with the account that ran the agent**, e.g. `ccask: haiku via account work
   (~/.claude-work), 3 turns, ...`.
-- **Accounts for Gemini CLI, Cursor CLI and OpenCode too** (`GEMINI_CLI_HOME`, `CURSOR_CONFIG_DIR`,
-  `XDG_DATA_HOME`, and `~/.cursor-<name>`), named `<service>-<name>`; Codex was added just before.
+- **Accounts for Gemini CLI and OpenCode too** (`GEMINI_CLI_HOME`, `XDG_DATA_HOME`), named
+  `<service>-<name>`; Codex was added just before. Cursor CLI stays one account: a real run showed
+  `CURSOR_CONFIG_DIR` does not move the transcripts ccfind reads.
 - **More than one account per service, not only Claude.** `~/.codex-<name>` folders (with a
   `sessions/` folder) are Codex accounts, named `codex-<name>` (`-a codex-work`; `-a codex` is
   `~/.codex`), and a home that `CLAUDE_CONFIG_DIR` or `CODEX_HOME` points at is found even if it

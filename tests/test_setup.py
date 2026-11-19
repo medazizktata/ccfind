@@ -27,7 +27,7 @@ class SetupTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         for h in ag.ACCOUNT_HOMES.values():              # the developer's own must not leak in
-            os.environ.pop(h["env"], None)
+            os.environ.pop(h["env"] or "", None)
 
     def run_setup(self, argv=(), answers=()):
         out = io.StringIO()

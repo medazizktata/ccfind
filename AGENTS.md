@@ -19,11 +19,12 @@ How an agent should use and maintain `ccfind`. Usage for people is in `README.md
 `gemini`, `cursor`, `opencode` are the default accounts). Accounts are found per service
 (`ACCOUNT_HOMES`, one entry each): `~/.claude-<name>` with a `projects/` folder is the Claude
 account `<name>`, `~/.codex-<name>` the Codex account `codex-<name>`, and the home a tool's own
-variable points at counts too (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CURSOR_CONFIG_DIR`,
+variable points at counts too (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 `GEMINI_CLI_HOME`, `XDG_DATA_HOME`; the last two name the folder that contains the home, see
 `env_parent`). Gemini and OpenCode have no sibling-folder convention, so their accounts come from
-the variable or the saved file. Cursor's chat titles are read from `~/.cursor/chats` only, so
-another Cursor account's sessions have no titles.
+the variable or the saved file. Cursor has one account: run for real, `cursor-agent` with
+`CURSOR_CONFIG_DIR` set moves its config and `chats/` there but still writes the transcripts
+(`projects/`) to `~/.cursor`, so the variable separates nothing ccfind reads.
 
 To add a tool: put its session format in `SOURCES` (an adapter needs a real session folder to
 read it from, so it cannot be written from a description) and one entry in `ACCOUNT_HOMES`. Tools
